@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { surfaceTexture } from './world-materials.js';
 
 export const memorialPlots = {
-  stone: { x: -12, z: 6, viewX: -10, viewZ: 9 },
+  stone: { x: -12, z: 6, viewX: -10.4, viewZ: 8.15, lookX: -11.45, lookZ: 5.60 },
   entrance: { x: -34.5, z: 23.5, viewX: -36.3, viewZ: 25.9 },
 };
 
@@ -23,53 +24,53 @@ function canvasTexture(width, height, paint) {
 }
 
 function limestone() {
-  const random = randomSource(2917);
-  const map = canvasTexture(384, 384, (ctx) => {
-    const sample = ctx.createImageData(384, 384);
-    const levels = [3, 7, 20, 40].map((size) => ({
-      size, grid: Float32Array.from({ length: size * size }, random),
-    }));
-    function grain({ size, grid }, u, v) {
-      const x = u * size, y = v * size;
-      const ix = Math.floor(x), iy = Math.floor(y);
-      const a = THREE.MathUtils.smoothstep(x - ix, 0, 1);
-      const b = THREE.MathUtils.smoothstep(y - iy, 0, 1);
-      const at = (i, j) => grid[(j % size) * size + (i % size)];
-      return THREE.MathUtils.lerp(
-        THREE.MathUtils.lerp(at(ix, iy), at(ix + 1, iy), a),
-        THREE.MathUtils.lerp(at(ix, iy + 1), at(ix + 1, iy + 1), a), b,
-      ) - .5;
-    }
-    for (let y = 0; y < 384; y++) {
-      for (let x = 0; x < 384; x++) {
-        const u = x / 384, v = y / 384;
-        const m = grain(levels[0], u, v) * 25 + grain(levels[1], u, v) * 23;
-        const n = m + grain(levels[2], u, v) * 12 + grain(levels[3], u, v) * 8 + (random() - .5) * 16;
-        const offset = 4 * (y * 384 + x);
-        sample.data.set([182 + n, 178 + n, 158 + n, 255], offset);
-      }
-    }
-    ctx.putImageData(sample, 0, 0);
-  });
-  map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({ map, roughness: .95, bumpMap: map, bumpScale: .012 });
+  const map = surfaceTexture('limestone');
+  return new THREE.MeshStandardMaterial({map, bumpMap: map, bumpScale: .027, vertexColors:true, roughness:.96});
 }
 
-// The front stays planar for the recessed portrait. A curved bevel catches the side light.
 function stoneGeometry() {
-  const face = new THREE.Shape();
-  face.moveTo(-.86, .03);
-  face.bezierCurveTo(-.88, .3, -.8, .74, -.69, .97);
-  face.bezierCurveTo(-.54, 1.2, -.22, 1.26, .11, 1.25);
-  face.bezierCurveTo(.41, 1.24, .7, 1.11, .78, .86);
-  face.bezierCurveTo(.86, .63, .91, .31, .88, .02);
-  face.bezierCurveTo(.34, -.03, -.42, -.02, -.86, .03);
-  const geometry = new THREE.ExtrudeGeometry(face, {
-    depth: .36, bevelEnabled: true, bevelSegments: 4,
-    bevelSize: .085, bevelThickness: .08, curveSegments: 8, steps: 1,
-  });
-  geometry.translate(0, 0, -.22);
+  // Weathered ridge, slightly asymmetric shoulders and a shallow cut for the ceramic frame.
+  const geometry = new THREE.SphereGeometry(1,40,24);
+  const position = geometry.attributes.position, uv = geometry.attributes.uv;
+  const colors = [], tint = new THREE.Color(), moss = new THREE.Color('#68754d');
+  for (let i=0; i<position.count; i++) {
+    const nx=position.getX(i), ny=position.getY(i), nz=position.getZ(i);
+    const pits = .055*Math.sin(7*nx+1.7*ny)*Math.cos(5*ny-2*nz) + .024*Math.sin(13*nz+10*ny);
+    const x = nx*(1.17+pits) - ny*.11;
+    const y = .47 + ny*(.95+pits*.9) - nx*.10 + .033*Math.sin(6*nz+nx);
+    const naturalFront = nz*(.73+pits) - .11;
+    const face = .34 + .042*Math.cos(7*x+3*y) + .017*Math.sin(15*y-5*x);
+    const z = Math.min(naturalFront, face);
+    position.setXYZ(i,x,y,z);
+    const cover = THREE.MathUtils.clamp(.21 - y*.23 + Math.sin(x*8+y*4)*.07,0,.23);
+    tint.set('#fff8e4').lerp(moss,cover);
+    colors.push(tint.r,tint.g,tint.b);
+    // Unwrap around the boulder rather than stretching a texture onto its rounded sides.
+    uv.setXY(i,uv.getX(i)*3.2,uv.getY(i)*1.28);
+  }
+  geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geometry.computeVertexNormals();
   return geometry;
+}
+
+function addContactShadow(marker, heightAt, x, z) {
+  const map = canvasTexture(96,96,ctx=>{
+    const gradient=ctx.createRadialGradient(48,48,2,48,48,47);
+    gradient.addColorStop(0,'rgba(32,37,26,.55)');
+    gradient.addColorStop(.57,'rgba(41,42,29,.31)');
+    gradient.addColorStop(1,'rgba(43,44,31,0)');
+    ctx.fillStyle=gradient;ctx.fillRect(0,0,96,96);
+  });
+  const geo=new THREE.PlaneGeometry(3.15,1.95,6,5).rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  const c=Math.cos(marker.rotation.y),s=Math.sin(marker.rotation.y);
+  for (let i=0;i<pos.count;i++){
+    const px=pos.getX(i),pz=pos.getZ(i)+.08;
+    pos.setXYZ(i,px,heightAt(x+c*px+s*pz,z-s*px+c*pz)-marker.position.y+.035,pz);
+  }
+  const shade=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map,transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-1}));
+  shade.renderOrder=1;
+  marker.add(shade);
 }
 
 function addDaisies(marker) {
@@ -179,7 +180,8 @@ function addGiftBouquet(marker, count) {
 
 function loadPortrait(texture, source, keepWholePhoto, signal) {
   // Read through the same authenticated origin; redirects must not expose a private request.
-  async function paint() {
+  async function readPhoto() {
+    if (source instanceof Blob) return source;
     if (typeof source !== 'string' || !source.startsWith('/') || source.startsWith('//')) return;
     const url = new URL(source, location.origin);
     if (url.origin !== location.origin) return;
@@ -188,8 +190,11 @@ function loadPortrait(texture, source, keepWholePhoto, signal) {
       cache: keepWholePhoto ? 'no-store' : 'default', signal,
     });
     if (!response.ok) return;
-    const blob = await response.blob();
-    if (signal?.aborted) return;
+    return response.blob();
+  }
+  async function paint() {
+    const blob = await readPhoto();
+    if (!blob || signal?.aborted) return;
     const image = await createImageBitmap(blob);
     try {
       if (signal?.aborted) return;
@@ -210,55 +215,103 @@ function loadPortrait(texture, source, keepWholePhoto, signal) {
   paint().catch(() => {});
 }
 
-function makeMarker(group, heightAt, place, memorial, stone, surface, signal, random) {
-  const { x, z, viewX, viewZ } = memorialPlots[place];
+function addPaidGifts(marker, gifts = []) {
+  const now = Date.now();
+  const active = gifts.filter(g => !g.expiresAt || Date.parse(g.expiresAt) > now);
+  const lily = active.some(g => g.type === 'lily');
+  const vase = active.some(g => g.type === 'vase');
+  if (!lily && !vase) return;
+  const base = new THREE.Group();
+  base.position.set(-.47,.055,.64);
+  base.name = '纪念礼物';
+  marker.add(base);
+  if (vase) {
+    const profile = [[0,0],[.12,.01],[.15,.09],[.135,.21],[.08,.29],[.088,.33],[.068,.34],[.061,.29]];
+    const ceramic = new THREE.Mesh(new THREE.LatheGeometry(profile.map(([x,y])=>new THREE.Vector2(x,y)),16),
+      new THREE.MeshStandardMaterial({color:0x9cbcb2,roughness:.33,side:THREE.DoubleSide}));
+    ceramic.name='青瓷花瓶';base.add(ceramic);
+  }
+  if (lily) {
+    const positions=[],colors=[];
+    const white=new THREE.Color('#fff5e1'),green=new THREE.Color('#566e41'),gold=new THREE.Color('#c99037');
+    function triangle(a,b,c,color){
+      positions.push(...a,...b,...c);
+      for(let i=0;i<3;i++)colors.push(color.r,color.g,color.b);
+    }
+    for(let i=0;i<4;i++){
+      const a=i*2.4, x=Math.sin(a)*.14, z=Math.cos(a)*.12, h=.48+.07*(i%3)+(vase?.12:0);
+      triangle([-.008,0,.01],[.008,0,.012],[x,h,z],green);
+      triangle([x*.4,h*.4,z*.4],[x+.06,h*.58,z+.05],[x+.12,h*.64,z+.09],green);
+      for(let j=0;j<6;j++){
+        const yaw=j*Math.PI/3+a,sn=Math.sin(yaw),cs=Math.cos(yaw);
+        const middle=[x+.052*cs,h+.05,z+.052*sn], tip=[x+.11*cs,h+.045,z+.11*sn];
+        const l=[middle[0]-.029*sn,h+.042,middle[2]+.029*cs],r=[middle[0]+.029*sn,h+.042,middle[2]-.029*cs];
+        triangle([x,h,z],l,tip,white);triangle([x,h,z],tip,r,white);
+        triangle([x,h,z],[x+.008,h,z],[x+.033*cs,h+.06,z+.033*sn],gold);
+      }
+    }
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+    geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));geo.computeVertexNormals();
+    const flowers=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
+    flowers.name='纪念百合';
+    flowers.userData.visibleUntil=Math.max(...active.filter(g=>g.type==='lily').map(g=>g.expiresAt?Date.parse(g.expiresAt):Infinity));
+    base.add(flowers);
+  }
+}
+
+function makeMarker(group, heightAt, place, memorial, stone, surface, signal, random, location = memorialPlots[place]) {
+  const { x, z, viewX, viewZ } = location;
   const marker = new THREE.Group();
-  marker.name = place === 'stone' ? '河湾纪念石' : '桦坡纪念石';
+  marker.name = {stone:'河湾纪念石',entrance:'桦坡纪念石',courtyard:'家庭纪念石'}[place];
   marker.position.set(x, heightAt(x, z) - .04, z);
   marker.rotation.y = Math.atan2(viewX - x, viewZ - z);
   group.add(marker);
 
   const monument = new THREE.Mesh(stone, surface);
   monument.castShadow = monument.receiveShadow = true;
+  monument.userData.habitat='stone';
   marker.add(monument);
 
-  const w = .54, h = .675, portraitY = .79;
-  const frameGeometry = new THREE.BoxGeometry(.58, .725, .042);
+  addContactShadow(marker,heightAt,x,z);
+  const w = .66, h = .76, portraitY = .82;
+  const frameGeometry = new THREE.BoxGeometry(w+.084,h+.084,.09);
   const frame = new THREE.Mesh(frameGeometry, new THREE.MeshStandardMaterial({
-    color: 0x79654d, metalness: .23, roughness: .62,
+    color: 0xd5bf96, metalness: .08, roughness: .48,
   }));
-  frame.position.set(0, portraitY, .235);
+  frame.position.set(0, portraitY, .397);
   marker.add(frame);
-  const photo = canvasTexture(512, 640, (ctx) => {
+  const photo = canvasTexture(528, 608, (ctx) => {
     ctx.fillStyle = '#e9e4d8';
-    ctx.fillRect(0, 0, 512, 640);
+    ctx.fillRect(0, 0, 528, 608);
     ctx.fillStyle = '#887e68';
     ctx.font = '45px serif';
     ctx.textAlign = 'center';
-    ctx.fillText('留 念', 256, 336);
+    ctx.fillText('留 念', 264, 319);
   });
   loadPortrait(photo, memorial ? memorial.photoUrl : '/pet.webp', !!memorial, signal);
   const portrait = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
     new THREE.MeshBasicMaterial({ map: photo, toneMapped: false }));
-  portrait.position.set(0, portraitY, .258);
+  portrait.position.set(0, portraitY, .444);
   marker.add(portrait);
 
   const dedication = memorial?.name || '永远想念你';
   const inscription = canvasTexture(768, 192, (ctx) => {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = '500 79px "Noto Serif CJK SC","Songti SC",serif';
-    ctx.fillStyle = '#e6ddc7';
+    ctx.font = '600 104px "Noto Serif CJK SC","Songti SC",serif';
+    ctx.fillStyle = '#f2ead7';
     ctx.fillText(dedication, 385, 89, 730);
-    ctx.fillStyle = '#45453b';
+    ctx.fillStyle = '#342d27';
     ctx.fillText(dedication, 384, 86, 730);
   });
-  const lettering = new THREE.Mesh(new THREE.PlaneGeometry(1.03, .258),
+  const lettering = new THREE.Mesh(new THREE.PlaneGeometry(1.18, .295),
     new THREE.MeshBasicMaterial({ map: inscription, transparent: true, depthWrite: false }));
-  lettering.position.set(0, .28, .223);
+  lettering.position.set(0, .256, .402);
   marker.add(lettering);
   addDaisies(marker);
   addGiftBouquet(marker, memorial?.flowerCount);
+  addPaidGifts(marker,memorial?.gifts);
 
   const pebbleGeometry = new THREE.IcosahedronGeometry(1, 1);
   const pebbles = new THREE.InstancedMesh(pebbleGeometry,
@@ -302,4 +355,16 @@ export function addMemorial(group, heightAt, memorial, signal) {
   });
   distant.receiveShadow = distant.castShadow = true;
   group.add(distant);
+}
+
+export function addFamilyMarkers(group, heightAt, gardens, signal, blockers) {
+  if (!gardens.length) return;
+  const stone=stoneGeometry(), surface=limestone(), random=randomSource(372);
+  const columns=Math.min(gardens.length,4);
+  gardens.forEach((garden,i)=>{
+    // Continue the family rows down the hillside, with visitors looking west.
+    const x=28.5-2.9*Math.floor(i/4), z=-6.8+(i%4-(columns-1)/2)*2.05;
+    makeMarker(group,heightAt,'courtyard',garden,stone,surface,signal,random,{x,z,viewX:x+3,viewZ:z+.15});
+    blockers.push([x,z,.65,.99]);
+  });
 }

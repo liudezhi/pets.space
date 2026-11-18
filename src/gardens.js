@@ -1,4 +1,5 @@
 import './gardens.css';
+import { catalogue, checkout, listOrders } from './checkout.js';
 
 export async function request(path, { method = 'GET', body } = {}) {
   const options = { method, credentials: 'same-origin', cache: 'no-store' };
@@ -62,7 +63,7 @@ const pendingFlowers = new Map();
 function flowerId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
 }
-export function renderGarden(body, garden, { changed, goWalk, isCurrent }) {
+export function renderGarden(body, garden, { changed, goWalk, isCurrent, openGarden, extraActions }) {
   const frame = make('article', '', 'garden-record');
   const photo = new Image();
   photo.src = garden.photoUrl;
@@ -98,10 +99,78 @@ export function renderGarden(body, garden, { changed, goWalk, isCurrent }) {
       write(endpoint + '/flowers', { method: 'POST', body: { requestId: pendingFlowers.get(garden.id) } }, '一束雏菊已放在石前。');
     }, true));
   }
-  actions.append(action('到花园看看', goWalk, !actions.children.length));
+  actions.append(action('到花园看看', () => goWalk(), !actions.children.length));
   text.append(actions);
   frame.append(photo, text);
   body.replaceChildren(frame);
+  const commerce = make('section', '', 'garden-commerce');
+  body.append(commerce);
+  const current = () => isCurrent() && commerce.isConnected;
+  const checkoutArea = make('div', '');
+  async function refresh(message) {
+    const { garden: updated } = await request(endpoint);
+    if (current()) changed(updated, message);
+  }
+  function buy(product, existing) {
+    const gift = product === 'lily' || product === 'vase';
+    checkout(checkoutArea, { request, product, existing, isCurrent: current,
+      gardenId: gift ? garden.id : undefined, gardenName: gift ? garden.name : undefined,
+      onLater: () => { checkoutArea.replaceChildren(); },
+      onPaid: () => refresh(gift ? catalogue[product].name + '已送到这里。' : '家庭庭院已开通，可以把纪念地加入庭院。'),
+    });
+  }
+  if (garden.gifts?.length) {
+    const list = make('ul', '', 'garden-gifts');
+    for (const gift of garden.gifts) {
+      const item = catalogue[gift.type];
+      if (!item) continue;
+      const until = gift.expiresAt ? '展示至 ' + new Date(gift.expiresAt).toLocaleDateString('zh-CN') : '长期陈列';
+      list.append(make('li', item.name + ' · ' + until));
+    }
+    commerce.append(make('h4', '石前的礼物'), list);
+  }
+  if (garden.isPublic && garden.acceptsFlowers) {
+    const shop = make('details', '', 'garden-shop');
+    shop.append(make('summary', '更多纪念礼物'), make('p', '亲友可免注册赠送。结算页会列明订单金额和付款方式。', 'garden-status'));
+    for (const product of ['lily', 'vase']) {
+      const item = catalogue[product];
+      const row = make('div', '', 'order-row');
+      row.append(make('span', item.detail), action(item.name + ' · ' + item.price, () => buy(product)));
+      shop.append(row);
+    }
+    commerce.append(shop);
+    listOrders(shop, { request, filter: order => order.gardenId === garden.id,
+      resume: order => buy(order.product, order) });
+  }
+  const family = make('section', '', 'garden-family');
+  commerce.append(family, checkoutArea);
+  async function loadFamily() {
+    family.replaceChildren();
+    try {
+      if (garden.courtyard) {
+        const { gardens } = await request('/api/courtyards/' + encodeURIComponent(garden.courtyard.id));
+        if (!current()) return;
+        const links = make('div', '', 'garden-actions');
+        for (const member of gardens) {
+          if (member.id === garden.id) links.append(make('span', member.name + '（此处）', 'garden-status'));
+          else links.append(action(member.name, () => openGarden(member.id)));
+        }
+        family.append(make('h4', garden.courtyard.name + ' · 家庭庭院'), links,
+          action('走进家庭庭院', () => goWalk('courtyard')));
+        if (garden.isOwner) family.append(action('移出家庭庭院', () =>
+          write(endpoint, { method: 'PATCH', body: { inCourtyard: false } }, '已移出家庭庭院，原纪念地保留。')));
+      } else if (garden.isOwner) {
+        const { courtyard } = await request('/api/courtyard');
+        if (!current()) return;
+        if (courtyard) family.append(action('加入家庭庭院', () =>
+          write(endpoint, { method: 'PATCH', body: { inCourtyard: true } }, '已加入家庭庭院。')));
+        else family.append(action('升级家庭庭院 · ' + catalogue.courtyard.price, () => buy('courtyard')));
+      }
+    } catch (error) {
+      if (current()) family.append(make('p', error.message, 'garden-status'), action('重新读取庭院', loadFamily));
+    }
+  }
+  loadFamily();
   const settings = make('section', '', 'garden-settings');
   if (garden.isOwner) {
     settings.append(make('h3', '探访设置'), make('p', garden.isPublic ? '已公开。访客可以看到照片和你写下的回忆。' : '仅自己可见。公开后，人们可以逛到这里，也可以通过链接探访。'));
@@ -129,6 +198,7 @@ export function renderGarden(body, garden, { changed, goWalk, isCurrent }) {
       body.append(make('p', '当前地址仅在这台电脑上可访问。跨设备探访时，请从双方都能访问的服务器地址分享。', 'garden-status'));
     }
   }
+  extraActions?.(body, garden);
   body.append(status);
   return status;
 }

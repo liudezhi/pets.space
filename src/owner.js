@@ -1,4 +1,6 @@
+import { preparePhoto, readOriginal } from './photos.js';
 import { places } from './places.js';
+import { catalogue, checkout, listOrders } from './checkout.js';
 import './owner.css';
 
 const sites = [
@@ -45,36 +47,7 @@ function alertLine() {
   return node;
 }
 
-async function preparePhoto(file) {
-  const signatures = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-  const startsWith = (bytes, offset = 0) => bytes.every((byte, i) => signatures[offset + i] === byte);
-  const jpeg = startsWith([0xff, 0xd8, 0xff]);
-  const png = startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const webp = startsWith([0x52, 0x49, 0x46, 0x46]) && startsWith([0x57, 0x45, 0x42, 0x50], 8);
-  if (!jpeg && !png && !webp) throw new Error('请选择 JPEG、PNG 或 WebP 格式的照片。');
-  if (file.size > 16 * 1024 * 1024) throw new Error('这张照片超过 16 MB，请选用较小的照片。');
-  const image = new Image();
-  const url = URL.createObjectURL(file);
-  try {
-    image.src = url;
-    try { await image.decode(); } catch { throw new Error('无法读取这张照片，请重新选择。'); }
-    const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('当前浏览器无法处理照片，请换用支持画布的浏览器。');
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    let result = canvas.toDataURL('image/webp', 0.83);
-    if (result.length > 2 * 1024 * 1024) result = canvas.toDataURL('image/webp', 0.64);
-    if (!result.startsWith('data:image/webp;base64,')) throw new Error('当前浏览器无法生成 WebP 照片，请更换浏览器再试。');
-    return result;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-export async function showOwner(body, { openGarden, setTitle, request, isCurrent }) {
+export async function showOwner(body, { openGarden, setTitle, request, isCurrent, recoveryKey }) {
   const root = element('div', 'owner-panel');
   root.tabIndex = -1;
   body.replaceChildren(root);
@@ -88,11 +61,13 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
     target.focus({ preventScroll: true });
   };
 
+  let paymentMode;
   function access(restoring = false) {
     const form = element('form', 'owner-form');
     const intro = element('p', 'owner-intro', restoring
       ? '用上次保存的恢复码，在这台设备上继续管理花园。'
-      : '目前开放建园测试。使用测试邀请码开通园主资格，本轮无需付款。');
+      : paymentMode === 'sandbox' ? '使用邀请码开通园主资格，基础建园测试价 ' + catalogue.foundation.price + '。本轮使用模拟结算，无真实扣款。'
+      : '使用邀请码建立基础建园订单。结算前请核对金额与支付模式。');
     const input = element('input');
     input.type = 'password';
     input.required = true;
@@ -101,11 +76,11 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
     input.autocapitalize = 'none';
     input.dataset.focus = '';
     const error = alertLine();
-    const confirm = submit(restoring ? '恢复我的花园' : '开通测试资格');
+    const confirm = submit(restoring ? '恢复我的花园' : '验证邀请码并查看订单');
     const change = button(restoring ? '改用邀请码' : '用恢复码登录', () => access(!restoring));
     const actions = element('div', 'owner-actions');
     actions.append(confirm, change);
-    form.append(intro, field(restoring ? '恢复码' : '测试邀请码', input), error, actions);
+    form.append(intro, field(restoring ? '恢复码' : paymentMode === 'sandbox' ? '测试邀请码' : '建园邀请码', input), error, actions);
     form.onsubmit = async event => {
       event.preventDefault();
       const value = input.value.trim();
@@ -114,9 +89,8 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
       change.disabled = true;
       error.textContent = '';
       try {
-        const response = await request(restoring ? '/api/restore' : '/api/session', {
-          method: 'POST', body: restoring ? { key: value } : { code: value },
-        });
+        if (!restoring) { orderScreen('foundation', value); return; }
+        const response = await request('/api/restore', { method: 'POST', body: { key: value } });
         if (!active()) return;
         if (response.recoveryKey) recovery(response.recoveryKey, restoring);
         else await dashboard();
@@ -124,7 +98,26 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
         if (active()) { error.textContent = failure.message; input.focus(); }
       } finally { confirm.disabled = false; change.disabled = false; }
     };
-    render(restoring ? '恢复园主身份' : '成为测试园主', form);
+    render(restoring ? '恢复园主身份' : paymentMode === 'sandbox' ? '成为测试园主' : '成为园主', form);
+    if (!restoring) historyFor('foundation');
+  }
+
+  function historyFor(...products) {
+    listOrders(root, { request, filter: order => products.includes(order.product),
+      resume: order => orderScreen(order.product, undefined, order) });
+  }
+
+  function orderScreen(product, inviteCode, existing) {
+    const area = element('div');
+    render('订单结算', area);
+    checkout(area, { request, product, inviteCode, existing, isCurrent: active,
+      onLater: start,
+      onPaid: async result => {
+        if (!active()) return;
+        if (result.recoveryKey) recovery(result.recoveryKey, false);
+        else await dashboard();
+      },
+    });
   }
 
   function recovery(key, restored) {
@@ -153,7 +146,7 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
   async function dashboard() {
     render('我的花园', element('p', 'owner-intro', '正在读取花园…'));
     try {
-      const { gardens } = await request('/api/mine');
+      const [{ gardens }, { courtyard }] = await Promise.all([request('/api/mine'), request('/api/courtyard')]);
       if (!active()) return;
       const list = element('ul', 'owner-gardens');
       for (const garden of gardens) {
@@ -169,7 +162,19 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
         clientRequestId: Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''),
       }), true);
       const intro = element('p', 'owner-intro', gardens.length ? '选择一座花园，继续探访或管理。' : '为它选一处喜欢的地方，留下照片和想说的话。');
-      render('我的花园', intro, list, create);
+      const family = element('section', 'garden-settings');
+      family.append(element('h3', '', '家庭庭院'));
+      if (courtyard) {
+        const members = gardens.filter(garden => courtyard.gardenIds.includes(garden.id));
+        family.append(element('p', '', members.length ? '住在这里的伙伴' : '庭院已开通。打开自己的纪念地后可将它加入庭院。'));
+        const links = element('div', 'garden-actions');
+        for (const member of members) links.append(button(member.name, () => openGarden(member.id)));
+        family.append(links);
+      } else {
+        family.append(element('p', '', catalogue.courtyard.detail), button('升级家庭庭院 · ' + catalogue.courtyard.price, () => orderScreen('courtyard')));
+      }
+      render('我的花园', intro, list, create, family);
+      historyFor('courtyard', 'foundation');
     } catch (failure) {
       render('我的花园', element('p', 'owner-alert', failure.message), button('重新读取', dashboard));
     }
@@ -209,6 +214,11 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
     const evidence = element('div', 'owner-file-state');
     evidence.setAttribute('aria-live', 'polite');
     if (draft.photo) evidence.append(photo(draft.photo, '已选的宠物照片'));
+    const preserve = element('input');
+    preserve.type = 'checkbox';
+    preserve.disabled = Boolean(draft.photo && !draft.originalFile);
+    preserve.checked = !preserve.disabled && draft.keepOriginal !== false;
+    preserve.onchange=()=>{ draft.keepOriginal=preserve.checked; };
     const preview = submit('私密预览');
     const error = alertLine();
     let changeVersion = 0;
@@ -217,13 +227,18 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
       if (!selected) return;
       const version = ++changeVersion;
       draft.photo = '';
+      draft.originalFile = undefined;
       error.textContent = '';
       preview.disabled = true;
       evidence.textContent = '正在整理照片…';
       try {
-        const processed = await preparePhoto(selected);
+        const { preview: processed, mime } = await preparePhoto(selected);
+        const originalFile = selected.size <= 8 * 1024 * 1024 ? await readOriginal(selected, mime) : undefined;
         if (version !== changeVersion || !active() || !form.isConnected) return;
         draft.photo = processed;
+        draft.originalFile = originalFile;
+        preserve.disabled = !originalFile;
+        preserve.checked=!!originalFile && draft.keepOriginal!==false;
         evidence.replaceChildren(photo(processed, '已选的宠物照片'), element('span', '', '照片已就绪'));
       } catch (failure) {
         if (version !== changeVersion || !active() || !form.isConnected) return;
@@ -234,7 +249,7 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
         if (version === changeVersion) preview.disabled = false;
       }
     };
-    form.append(siteField, field('它的名字', name), field('照片 · JPEG、PNG 或 WebP', picker), evidence, field('写给它的话（可留空）', story), error, preview);
+    form.append(siteField, field('它的名字', name), field('照片 · JPEG、PNG 或 WebP', picker), evidence, field('同时私密保存原始照片（8 MiB 以内）', preserve), field('写给它的话（可留空）', story), error, preview);
     form.onsubmit = event => {
       event.preventDefault();
       draft.name = name.value.trim();
@@ -261,7 +276,7 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
       error.textContent = '';
       confirm.textContent = '正在保存…';
       try {
-        const { garden } = await request('/api/gardens', { method: 'POST', body: draft });
+        const { garden } = await request('/api/gardens', { method: 'POST', body: { ...draft, originalFile: draft.keepOriginal===false ? undefined : draft.originalFile } });
         if (active()) openGarden(garden.id);
       } catch (failure) {
         if (active()) error.textContent = failure.message;
@@ -273,7 +288,7 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
     }, true);
     const actions = element('div', 'owner-actions');
     actions.append(editButton, confirm);
-    render('私密预览', recap, element('p', 'owner-intro', '保存后仅园主可见。你可以从花园里选择是否公开。'), error, actions);
+    render('私密预览', recap, element('p', 'owner-intro', '保存后仅园主可见。你可以选择是否公开，还可以在家庭相册中管理照片原件。'), error, actions);
   }
 
   async function start() {
@@ -281,11 +296,13 @@ export async function showOwner(body, { openGarden, setTitle, request, isCurrent
     try {
       const session = await request('/api/session');
       if (!active()) return;
+      paymentMode = session.paymentMode ?? 'sandbox';
       if (session.owner) await dashboard();
       else access();
     } catch (failure) {
       render('我的花园', element('p', 'owner-alert', failure.message), button('重新读取', start));
     }
   }
-  await start();
+  if (recoveryKey) recovery(recoveryKey, false);
+  else await start();
 }

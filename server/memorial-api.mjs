@@ -1,9 +1,15 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { products } from '../shared/catalogue.mjs';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createCommerce } from './commerce.mjs';
+import { createPaymentProvider } from './stripe-checkout.mjs';
+import { initializeInvites, hasInvite } from './invite-store.mjs';
+import { createLegacyCare, originalOf } from './legacy-care.mjs';
 
 const COOKIE = 'qiguang_session';
+const BUYER_COOKIE = 'qiguang_buyer';
 const SESSION_TTL = 60 * 60 * 24 * 90;
 const MAX_PHOTO = 1536 * 1024;
 const PHOTO_PREFIX = 'data:image/webp;base64,';
@@ -38,10 +44,7 @@ function assertSameOrigin(req) {
   }
 }
 
-function readJson(req, limit) {
-  if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
-    reject(415, '请使用 JSON 格式提交。');
-  }
+function readBytes(req, limit) {
   if (Number(req.headers['content-length']) > limit) reject(413, '提交的内容太大。');
   return new Promise((resolve, fail) => {
     let size = 0;
@@ -62,15 +65,23 @@ function readJson(req, limit) {
     req.once('aborted', () => fail(new ApiError(400, '请求已中断。')));
     req.once('end', () => {
       if (overLimit) return;
-      try {
-        const value = JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
-        if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error();
-        resolve(value);
-      } catch {
-        fail(new ApiError(400, '提交的 JSON 格式有误。'));
-      }
+      resolve(Buffer.concat(chunks, size));
     });
   });
+}
+
+async function readJson(req, limit) {
+  if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+    reject(415, '请使用 JSON 格式提交。');
+  }
+  const bytes = await readBytes(req, limit);
+  try {
+    const value = JSON.parse(bytes.toString('utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+    return value;
+  } catch {
+    reject(400, '提交的 JSON 格式有误。');
+  }
 }
 
 function digest(value) {
@@ -169,7 +180,8 @@ function quotaTracker() {
   };
 }
 
-export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
+export function createMemorialApi({ dataDir, inviteCode, samplePhoto, payment }) {
+  const provider = createPaymentProvider(payment, reject);
   if (typeof dataDir !== 'string' || !dataDir) throw new Error('纪念档案需要专用的数据目录。');
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const databasePath = join(dataDir, 'memorials.sqlite');
@@ -240,12 +252,15 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
     throw error;
   }
 
+  initializeInvites(db);
+  const commerce = createCommerce({ db, sql, transaction, reject });
   const fields = `SELECT id,owner,name,story,place,is_public,accepts_flowers,
     (SELECT count(*) FROM flowers WHERE garden=gardens.id) AS flower_count FROM gardens`;
   function present(row, owner) {
     return {
       id: row.id, name: row.name, story: row.story, place: row.place,
       isPublic: Boolean(row.is_public), acceptsFlowers: Boolean(row.accepts_flowers),
+      gifts: commerce.gifts(row.id), courtyard: commerce.gardenCourtyard(row.id),
       flowerCount: row.flower_count, isOwner: row.owner === owner, photoUrl: '/api/gardens/' + row.id + '/photo',
     };
   }
@@ -257,9 +272,19 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
 
   const limit = quotaTracker();
   const invitation = typeof inviteCode === 'string' && inviteCode.trim() ? digest(inviteCode) : null;
+  function readCookie(req, name) {
+    const pair = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(name + '='));
+    const value = pair?.slice(name.length + 1);
+    return value && /^[\w-]{43}$/.test(value) ? value : null;
+  }
+  function writeCookie(req, res, name, value) {
+    const secure = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
+    const cookie = name + '=' + value + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + SESSION_TTL + (secure ? '; Secure' : '');
+    res.appendHeader('Set-Cookie', cookie);
+  }
   function ownerOf(req) {
-    const raw = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(COOKIE + '='))?.slice(COOKIE.length + 1);
-    if (!raw || !/^[\w-]{43}$/.test(raw)) return null;
+    const raw = readCookie(req, COOKIE);
+    if (!raw) return null;
     return sql('SELECT owner FROM sessions WHERE hash=? AND expires>?').get(digest(raw), Date.now())?.owner ?? null;
   }
   function requireOwner(owner) {
@@ -271,10 +296,10 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
     const now = Date.now();
     sql('DELETE FROM sessions WHERE expires <= ?').run(now);
     sql('INSERT INTO sessions VALUES (?,?,?)').run(digest(value), owner, now + SESSION_TTL * 1000);
-    const secure = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
-    res.setHeader('Set-Cookie', COOKIE + '=' + value + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + SESSION_TTL + (secure ? '; Secure' : ''));
+    writeCookie(req, res, COOKIE, value);
   }
 
+  const care = createLegacyCare({ db, sql, transaction, reject, readJson, json, requireOwner, findGarden, present, webpData, limit, allGifts: commerce.allGifts });
   async function middleware(req, res, next) {
     const path = (req.url ?? '/').split('?')[0];
     if (!path.startsWith('/api/') && path !== '/api') return next();
@@ -284,27 +309,109 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
     try {
       const method = req.method;
       const ip = req.socket.remoteAddress ?? 'local';
-      const writing = method === 'POST' || method === 'PATCH';
+      if (path === '/api/payments/stripe/webhook') {
+        if (provider.mode === 'sandbox') reject(404, '未找到这个地址。');
+        if (method !== 'POST') reject(405, '支付通知只接受 POST。');
+        if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') reject(415, '通知应为 JSON。');
+        if (!req.headers['stripe-signature']) reject(400, '支付通知缺少签名。');
+        const bytes = await readBytes(req, 256 * 1024);
+        provider.webhook(bytes, req.headers['stripe-signature'], commerce);
+        return json(res, 200, { received: true });
+      }
+      const writing = !['GET', 'HEAD', 'OPTIONS'].includes(method);
       if (writing) {
         assertSameOrigin(req);
         limit(ip, 'writes', 180, 60_000);
       }
       const owner = ownerOf(req);
-      if (path === '/api/session' && method === 'GET') return json(res, 200, { owner: Boolean(owner) });
-      if (path === '/api/session' && method === 'POST') {
-        const { code } = await readJson(req, 2048);
-        if (owner) return json(res, 200, { owner: true });
-        limit(ip, 'join', 24, 300_000);
-        if (!invitation || typeof code !== 'string' || !timingSafeEqual(digest(code), invitation)) {
-          reject(401, '邀请码无效。');
-        }
-        const id = randomUUID(), key = token();
-        transaction(() => {
-          sql('INSERT INTO owners VALUES (?,?)').run(id, digest(key));
-          issueSession(req, res, id);
-        });
-        return json(res, 201, { owner: true, recoveryKey: key });
+      const buyer = readCookie(req, BUYER_COOKIE);
+      if (path === '/api/sign-out' && method === 'POST') {
+        await readJson(req, 1024);
+        const session = readCookie(req, COOKIE);
+        if (session) sql('DELETE FROM sessions WHERE hash=?').run(digest(session));
+        for (const name of [COOKIE, BUYER_COOKIE]) res.appendHeader('Set-Cookie', name + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+        return json(res,200,{ok:true});
       }
+      if (path === '/api/session' && method === 'GET') {
+        if (!buyer) writeCookie(req, res, BUYER_COOKIE, token());
+        const session = { owner: Boolean(owner) };
+        if (provider.mode !== 'sandbox') session.paymentMode = provider.mode;
+        return json(res, 200, session);
+      }
+      if (path === '/api/session' && method === 'POST') {
+        reject(410, '请用邀请码创建基础建园订单，并完成结算。');
+      }
+      if (path === '/api/orders' || path.startsWith('/api/orders/')) {
+        if (!buyer) {
+          if (path === '/api/orders' && method === 'POST') reject(409, '请先打开花园以建立购买会话。');
+          if (path === '/api/orders' && method === 'GET') return json(res, 200, { orders: [] });
+          reject(404, '未找到这张订单。');
+        }
+        const buyerHash = digest(buyer).toString('hex');
+        if (path === '/api/orders' && method === 'GET') return json(res, 200, { orders: commerce.orders(buyerHash) });
+        if (path === '/api/orders' && method === 'POST') {
+          limit(ip, 'order', 40, 60_000);
+          const input = await readJson(req, 4096);
+          if (typeof input.product !== 'string' || !Object.hasOwn(products, input.product)) reject(400, '请选择有效的商品。');
+          if (typeof input.requestId !== 'string' || !/^[\w-]{8,128}$/.test(input.requestId)) reject(400, '购买请求编号无效。');
+          let inviteHash = null;
+          if (input.product === 'foundation') {
+            limit(ip, 'join', 24, 300_000);
+            if (typeof input.inviteCode !== 'string' || !input.inviteCode) reject(401, '邀请码无效。');
+            const submitted = digest(input.inviteCode);
+            inviteHash = submitted.toString('hex');
+            const legacy = invitation !== null && timingSafeEqual(submitted, invitation);
+            if (!legacy && !hasInvite(db, provider.mode, inviteHash)) reject(401, '邀请码无效。');
+          }
+          const gift = input.product === 'lily' || input.product === 'vase';
+          if (gift && (typeof input.gardenId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.gardenId))) {
+            reject(400, '请选择有效的纪念园。');
+          }
+          if (!gift && input.gardenId != null) reject(400, '这个商品不需要选择纪念园。');
+          const result = commerce.create({
+            buyerHash, owner, product: input.product, gardenId: input.gardenId ?? null, requestId: input.requestId,
+            mode: provider.mode, inviteHash,
+          });
+          return json(res, result.created ? 201 : 200, { order: result.order });
+        }
+        const match = /^\/api\/orders\/([a-z0-9-]{1,64})(\/pay)?$/.exec(path);
+        if (!match) reject(404, '未找到这张订单。');
+        const [, id, pay] = match;
+        if (!pay && method === 'GET') return json(res, 200, { order: commerce.order(id, buyerHash) });
+        if (pay && method === 'POST') {
+          await readJson(req, 2048);
+          // Can safely reissue after a lost response without storing a plaintext key.
+          const key = createHmac('sha256', buyer).update('garden-foundation/v1/' + id).digest('base64url');
+          const options = { id, buyerHash, owner, recoveryHash: digest(key), mode: provider.mode };
+          if (provider.mode !== 'sandbox') {
+            const prepared = commerce.prepareCheckout(options);
+            if (prepared.order.status === 'pending') {
+              const checkoutUrl = await provider.checkout(commerce, prepared);
+              return json(res, 200, { order: prepared.order, checkoutUrl, owner: Boolean(owner) });
+            }
+            if (prepared.order.status === 'needs_review') return json(res, 200, { order: prepared.order, owner: Boolean(owner) });
+          }
+          const result = commerce.pay(options);
+          const response = { order: result.order, owner: Boolean(owner) };
+          if (result.order.product === 'foundation') {
+            if (result.canRecover && (!owner || owner === result.ownerId)) {
+              if (!owner) issueSession(req, res, result.ownerId);
+              response.owner = true;
+              response.recoveryKey = key;
+            }
+          } else if (result.order.product === 'courtyard') {
+            requireOwner(owner);
+            response.courtyard = commerce.myCourtyard(owner);
+          } else if (result.order.gardenId) {
+            // Do not expose garden data on a payment replay after privacy was changed.
+            const visible = sql(fields + ' WHERE id=? AND (is_public=1 OR owner=?)').get(result.order.gardenId, owner);
+            if (visible) response.garden = present(visible, owner);
+          }
+          return json(res, 200, response);
+        }
+        reject(405, '此地址不支持这个操作。');
+      }
+
       if (path === '/api/restore' && method === 'POST') {
         limit(ip, 'restore', 24, 300_000);
         const { key } = await readJson(req, 2048);
@@ -313,10 +420,23 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
         transaction(() => {
           const row = sql('UPDATE owners SET recovery_hash=? WHERE recovery_hash=? RETURNING id').get(digest(replacement), digest(key));
           if (!row) reject(401, '恢复钥匙无效或已使用。');
+          // A different person restoring on a shared browser gets a fresh checkout history.
+          if (!buyer || (owner && owner !== row.id)) writeCookie(req, res, BUYER_COOKIE, token());
           issueSession(req, res, row.id);
         });
         return json(res, 200, { owner: true, recoveryKey: replacement });
       }
+
+      if (path === '/api/courtyard' && method === 'GET') {
+        requireOwner(owner);
+        return json(res, 200, { courtyard: commerce.myCourtyard(owner) });
+      }
+      const court = /^\/api\/courtyards\/([a-z0-9-]{1,64})$/.exec(path);
+      if (court && method === 'GET') {
+        const { courtyard, gardenIds } = commerce.visibleCourtyard(court[1], owner);
+        return json(res, 200, { courtyard, gardens: gardenIds.map(id => present(findGarden(id, owner), owner)) });
+      }
+      if (await care({ req, res, path, method, owner, ip })) return;
 
       if (path === '/api/mine' && method === 'GET') {
         requireOwner(owner);
@@ -330,7 +450,7 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
       if (path === '/api/gardens' && method === 'POST') {
         requireOwner(owner);
         limit(owner, 'create', 16, 60_000);
-        const input = await readJson(req, Math.ceil(MAX_PHOTO / 3) * 4 + 32768);
+        const input = await readJson(req, 15 * 1024 * 1024);
         const name = validateText(input.name, 40, true);
         const story = validateText(input.story ?? '', 2000, false);
         if (input.place !== 'stone' && input.place !== 'entrance') reject(400, '请从河湾与入口桦坡中选择一处。');
@@ -339,12 +459,17 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
           reject(400, '建园请求编号无效。');
         }
         const image = webpData(input.photo);
+        const original = input.originalFile ? originalOf(input.originalFile, reject) : null;
         const result = transaction(() => {
           const id = randomUUID();
           const insert = sql(`INSERT INTO gardens(id,owner,name,story,place,photo,client_request_id)
             VALUES (?,?,?,?,?,?,?) ON CONFLICT(owner,client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING`)
             .run(id, owner, name, story, input.place, image, requestId ?? null);
-          if (insert.changes) return { status: 201, id };
+          if (insert.changes) {
+            if (original) sql('INSERT INTO archive_photos VALUES(?,?,?,?,?,?,0,?)')
+              .run(randomUUID(), id, digest(original).toString('hex'), input.originalFile.mime, original, image, new Date().toISOString());
+            return { status: 201, id };
+          }
           const previous = sql(`SELECT id, (name=? AND story=? AND place=? AND photo=?) AS matches
             FROM gardens WHERE owner=? AND client_request_id=?`).get(name, story, input.place, image, owner, requestId);
           if (!previous?.matches) reject(409, '这个建园请求已使用，请重新确认内容。');
@@ -367,11 +492,15 @@ export function createMemorialApi({ dataDir, inviteCode, samplePhoto }) {
         findGarden(id, owner, true);
         const patch = await readJson(req, 2048);
         const keys = Object.keys(patch);
-        if (!keys.length || keys.some(k => !['isPublic','acceptsFlowers'].includes(k) || typeof patch[k] !== 'boolean')) {
+        if (!keys.length || keys.some(k => !['isPublic','acceptsFlowers','inCourtyard'].includes(k) || typeof patch[k] !== 'boolean')) {
           reject(400, '请提交有效的公开或献花设置。');
         }
-        sql(`UPDATE gardens SET is_public=COALESCE(?,is_public), accepts_flowers=COALESCE(?,accepts_flowers) WHERE id=? AND owner=?`)
-          .run('isPublic' in patch ? Number(patch.isPublic) : null, 'acceptsFlowers' in patch ? Number(patch.acceptsFlowers) : null, id, owner);
+        transaction(() => {
+          findGarden(id, owner, true);
+          if ('inCourtyard' in patch) commerce.setMember(id, owner, patch.inCourtyard);
+          sql(`UPDATE gardens SET is_public=COALESCE(?,is_public), accepts_flowers=COALESCE(?,accepts_flowers) WHERE id=? AND owner=?`)
+            .run('isPublic' in patch ? Number(patch.isPublic) : null, 'acceptsFlowers' in patch ? Number(patch.acceptsFlowers) : null, id, owner);
+        });
         return json(res, 200, { garden: present(findGarden(id, owner), owner) });
       }
       if (action === 'flowers' && method === 'POST') {

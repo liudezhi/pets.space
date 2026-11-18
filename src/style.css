@@ -56,7 +56,7 @@ h1 { font: 500 clamp(47px,4.4vw,82px)/1.28 var(--serif); letter-spacing: .08em; 
 .section-head, .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 h2 { font: 600 clamp(23px,2.1vw,36px)/1.45 var(--serif); letter-spacing: .045em; }
 .section-head button { min-height: 44px; gap: 8px; color: var(--muted); font-size: 13px; }
-.places { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: clamp(12px,1.6vw,28px); margin-top: 16px; }
+.places { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: clamp(12px,1.6vw,28px); margin-top: 16px; }
 .place-card { display: flex; gap: clamp(12px,1.3vw,24px); align-items: center; text-align: left; padding: 8px; border: 1px solid var(--line); border-radius: 3px; }
 .place-card:hover { border-color: #7e8b77; }
 .place-card[aria-pressed="true"] { background: #e8ecdf; border-color: #84957a; }
@@ -83,6 +83,9 @@ dialog::backdrop { background: #19251ed9; }
 .entry h3 { font: 500 38px/1.45 var(--serif); margin: 7px 0 13px; }
 .entry p { font: 16px/1.9 var(--serif); }
 .album-visit { margin-top: 25px; }
+@media (min-width: 761px) and (max-width: 1080px) {
+  .places { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
 @media (max-width: 760px) {
   .topbar { height: 67px; }
   nav { gap: 15px; }

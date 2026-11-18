@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'">
+  <meta name="theme-color" content="#f7f6ef">
+  <title>栖光谷 · 免安装游览</title>
+  <link rel="icon" href="data:,">
+  <style>/* INLINE_STYLES */</style>
+</head>
+<body>
+  <a class="skip" href="#garden">跳至花园</a>
+  <header class="topbar">
+    <a class="brand" href="#garden" aria-label="栖光谷"><span class="seal" data-icon="flower"></span><span><strong>栖光谷</strong><small>PETS.SPACE</small></span></a>
+    <nav aria-label="花园导览">
+      <button data-show="map"><i data-icon="map"></i>园区地图</button>
+      <button data-show="album"><i data-icon="book"></i>麦子的纪念册</button>
+    </nav>
+  </header>
+  <main id="garden">
+    <section class="vista" aria-label="栖光谷取景">
+      <img class="scene-photo" id="landscape" alt="">
+      <div class="shade"></div>
+      <div class="place-tag"><i data-icon="pin"></i><span id="region"></span></div>
+      <div class="hero-copy">
+        <p class="english" lang="en" id="english-name"></p>
+        <h1 id="place-name"></h1>
+        <p id="place-copy"></p>
+        <button class="enter" id="begin"><i data-icon="walk"></i>进入 3D 漫游<i data-icon="right"></i></button>
+      </div>
+      <div class="world" id="world" hidden></div>
+      <div class="walk-menu" hidden><button id="leave"><i data-icon="left"></i>返回风景图</button><span id="walk-place"></span><button data-show="climate">时光与天气</button></div>
+      <p class="walk-tip" hidden>WASD 或方向键移动 · 拖动环顾</p>
+    </section>
+    <div class="world-tools"><button data-show="climate">时光与天气</button></div>
+    <p id="notice" role="status"></p>
+    <section class="trail" aria-labelledby="trail-title">
+      <div class="section-head"><h2 id="trail-title">沿步道探访</h2><button data-show="map">查看地图<i data-icon="upRight"></i></button></div>
+      <div class="places" id="places"></div>
+    </section>
+  </main>
+  <dialog id="panel" aria-labelledby="panel-title">
+    <div class="panel-head"><h2 id="panel-title"></h2><button id="close" aria-label="关闭"><i data-icon="close"></i></button></div>
+    <div id="panel-body"></div>
+  </dialog>
+  <noscript>请允许此文件运行 JavaScript，以查看地点风景和 3D 漫游。</noscript>
+  <script>/* INLINE_SCENE */</script>
+</body>
+</html>

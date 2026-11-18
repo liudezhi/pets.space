@@ -1,4 +1,7 @@
 import * as THREE from 'three'
+import { surfaceTexture } from './world-materials.js'
+import { atmosphere } from './world-atmosphere.js'
+import { buildCourtyard } from './world-courtyard.js'
 import { addForest } from './terrain-forest.js'
 import { addMemorial, memorialPlots } from './terrain-memorial.js'
 
@@ -84,35 +87,15 @@ function mesh(group, geo, mat) {
   return object
 }
 
-// Repeating substrate supplies fine-scale meadow variation beneath the grass blades.
-function soilTexture(random) {
-  const size = 192
-  const pixels = new Uint8Array(size * size * 4)
-  for (let i = 0; i < size * size; i++) {
-    const x = i % size, y = Math.floor(i / size)
-    const striation = 5 * sin(2 * PI * (8 * x + 13 * y) / size) + 4 * sin(2 * PI * (x - 3 * y) / size)
-    const luminance = 213 + 27 * random() + striation
-    pixels.set([luminance + 4, luminance + 5, luminance - 4, 255], i * 4)
-  }
-  const tex = new THREE.DataTexture(pixels, size, size)
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  tex.repeat.set(88, 88)
-  tex.generateMipmaps = true
-  tex.magFilter = THREE.LinearFilter
-  tex.minFilter = THREE.LinearMipmapLinearFilter
-  tex.needsUpdate = true
-  return tex
-}
-
-function buildGround(group, random) {
+function buildGround(group) {
   const g = new THREE.PlaneGeometry(WORLD, WORLD, 184, 184).rotateX(-PI / 2)
   const p = g.attributes.position
   const colors = []
   const c = new THREE.Color()
-  const green = new THREE.Color('#94a765')
-  const shadow = new THREE.Color('#617f55')
-  const hay = new THREE.Color('#bac083')
-  const shore = new THREE.Color('#a9a486')
+  const green = new THREE.Color('#dbe7c3')
+  const shadow = new THREE.Color('#b7c798')
+  const hay = new THREE.Color('#f9f0cd')
+  const shore = new THREE.Color('#b8b69c')
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), z = p.getZ(i)
     p.setY(i, ground(x, z))
@@ -123,14 +106,15 @@ function buildGround(group, random) {
   }
   g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
   g.computeVertexNormals()
-  const land = mesh(group, g, new THREE.MeshStandardMaterial({ map: soilTexture(random), vertexColors: true, roughness: 1 }))
+  const land = mesh(group, g, new THREE.MeshStandardMaterial({ map: surfaceTexture('meadow',122), vertexColors: true, roughness: 1 }))
+  land.userData.habitat = 'ground'
   land.receiveShadow = true
 }
 
 function trailGeometry(group) {
   const pts = trail.getPoints(230)
-  const positions = [], cols = [], faces = []
-  const earth = new THREE.Color('#cdbe9f'), verge = new THREE.Color('#a4a778')
+  const positions = [], cols = [], faces = [], uvs = []
+  const earth = new THREE.Color('#efead5'), verge = new THREE.Color('#cbccac')
   pts.forEach((p, i) => {
     const next = pts[Math.min(i + 1, pts.length - 1)]
     const prev = pts[Math.max(i - 1, 0)]
@@ -143,7 +127,8 @@ function trailGeometry(group) {
       const x = p.x - dz / len * offset, z = p.z + dx / len * offset
       positions.push(x, ground(x, z) + (onBridge ? -1.4 : 0.065), z)
       const c = (edge ? verge : earth).clone().multiplyScalar(0.95 + 0.06 * cos(i * 0.22 + j))
-      cols.push(c.r, c.g, c.b)
+      cols.push(c.r, c.g, c.b, edge ? .025 : .99)
+      uvs.push(x*.54+z*.23,z*.54-x*.23)
       if (i > 0 && j < 4) {
         const a = i * 5 + j
         faces.push(a - 5, a - 4, a, a, a - 4, a + 1)
@@ -152,78 +137,65 @@ function trailGeometry(group) {
   })
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 4))
+  geo.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2))
   geo.setIndex(faces)
   geo.computeVertexNormals()
-  mesh(group, geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }))
+  mesh(group, geo, new THREE.MeshStandardMaterial({map:surfaceTexture('gravel'),vertexColors:true,roughness:1,side:THREE.DoubleSide,transparent:true,depthWrite:false})).userData.habitat='trail'
 }
 
-function addRidge(group, radius, base, peaks, tint, phase) {
-  const geo = new THREE.BufferGeometry()
-  const positions = [], colors = [], indices = []
-  const steps = 256, rows = 7
-  const palette = new THREE.Color(tint)
-  for (let j = 0; j <= rows; j++) {
-    const t = j / rows
-    for (let i = 0; i <= steps; i++) {
-      const a = i / steps * 2 * PI
-      const wave = sin(3 * a + phase) * 0.38 + cos(6 * a - phase) * 0.26 + sin(13 * a + phase) * 0.12 + 0.09 * cos(31 * a + phase) + 0.045 * cos(63 * a)
-      const shoulder = 0.10 * sin(a * 12 + phase + 2 * t) * sin(t * PI)
-      const r = radius * (0.77 + t * 0.23 + 0.06 * sin(3 * a + phase) + shoulder)
-      positions.push(r * cos(a), -3 + t * (base + peaks * wave) + sin(t * PI) * sin(a * 11 + phase) * 3, r * sin(a))
-      const c = palette.clone().multiplyScalar(0.84 + 0.13 * t + 0.12 * sin(11 * a + phase))
-      colors.push(c.r, c.g, c.b)
-      if (j && i) {
-        const b = j * (steps + 1) + i
-        indices.push(b, b - 1, b - steps - 1, b - steps - 1, b - 1, b - steps - 2)
+function mountainRanges(group) {
+  const map=surfaceTexture('ridges');
+  map.repeat.set(4,1);
+  map.wrapT=THREE.ClampToEdgeWrapping;
+  // Both rings have their own parallax and horizon. The sky stays visible through
+  // the photographic alpha edge, with time-of-day haze applied by the atmosphere.
+  for(const [radius,height,bottom,yaw,air] of [[220,104,-21,.81,.45],[140,61,-19,.08,.18]]){
+    const material=new THREE.MeshBasicMaterial({map,side:THREE.BackSide,alphaTest:.24,fog:false});
+    const ridge=mesh(group,new THREE.CylinderGeometry(radius,radius,height,112,1,true),material);
+    ridge.position.y=bottom+height*.5;
+    ridge.rotation.y=yaw;
+    ridge.name='远山';
+    ridge.userData.air=air;
+    ridge.userData.habitat='ridge';
+  }
+}
+
+function addBanks(group, riverbed) {
+  const vertices=[], uvs=[], colors=[], indices=[];
+  const strips=4, samples=220;
+  for (const side of [-1,1]) {
+    const start=vertices.length/3;
+    for(let i=0; i<=samples; i++) {
+      const z=-90+i*180/samples, width=riverWidth(z);
+      for(let band=0;band<strips;band++){
+        const offset=[-.4,.5,1.45,2.45+.4*Math.sin(z*.66)][band];
+        const x=riverX(z)+side*(width+offset);
+        vertices.push(x,ground(x,z)+.055,z);uvs.push(x*.8+z*.16,z*.79-x*.16);
+        const wet=[.62,.78,.96,.98][band];
+        colors.push(wet,wet,wet,[.96,1,.83,0][band]);
+        if(i&&band){
+          const d=start+i*strips+band;
+          indices.push(d-strips-1,d-1,d,d-strips-1,d,d-strips);
+        }
       }
     }
   }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-  geo.setIndex(indices)
-  mesh(group, geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, fog: false }))
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
+  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,4));
+  geo.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
+  geo.setIndex(indices);geo.computeVertexNormals();
+  mesh(group,geo,new THREE.MeshStandardMaterial({map:riverbed,vertexColors:true,side:THREE.DoubleSide,transparent:true,depthWrite:false,roughness:.76}));
 }
 
-function skyAndLights(scene, group) {
-  const sky = mesh(group, new THREE.SphereGeometry(420, 40, 20), new THREE.ShaderMaterial({
-    side: THREE.BackSide, depthWrite: false,
-    vertexShader: 'varying vec3 vPos; void main(){ vPos=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
-    fragmentShader: `
-      varying vec3 vPos;
-      float hash(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
-      float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f); return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+1.),f.x),f.y); }
-      void main(){
-        vec3 d=normalize(vPos); float h=max(d.y,0.);
-        vec3 sun=normalize(vec3(-.79,.34,-.50));
-        float glow=max(dot(d,sun),0.);
-        vec3 col=mix(vec3(.81,.83,.75), vec3(.22,.48,.72),pow(h,.5));
-        col+=vec3(.23,.12,.035)*pow(glow,8.);
-        vec2 p=d.xz/(max(h,.04)+.22)*vec2(2.1,6.);
-        float cloud=.58*noise(p)+.28*noise(2.1*p)+.14*noise(4.4*p);
-        col=mix(col,vec3(.96,.90,.78),.58*smoothstep(.52,.78,cloud)*smoothstep(.02,.16,h));
-        col+=vec3(1.,.76,.40)*(pow(glow,290.)*.26+smoothstep(.9996,.9999,glow)*.9);
-        gl_FragColor=vec4(col,1.);
-        #include <colorspace_fragment>
-      }`,
-  }))
-  sky.renderOrder = -2
-  group.add(new THREE.HemisphereLight(0xfff3d6, 0x9aa989, 1.53))
-  const sun = new THREE.DirectionalLight(0xffe2ad, 2.06)
-  sun.position.set(-54, 45, -22)
-  group.add(sun)
-  scene.fog = new THREE.FogExp2('#cedacf', 0.0061)
-  addRidge(group, 216, 43, 39, '#abbcc0', 0.4)
-  addRidge(group, 170, 32, 28, '#8ba5aa', 2.6)
-  addRidge(group, 133, 20, 17, '#79958c', 4.9)
-}
-
-function addWater(group) {
-  const positions = [], indices = []
+function addWater(group, riverbed) {
+  const positions = [], indices = [], banks = [];
   for (let i = 0; i <= 240; i++) {
     const z = -96 + 192 * i / 240
     const mid = riverX(z), w = riverWidth(z) + 1.15
     positions.push(mid - w, WATER_LEVEL, z, mid + w, WATER_LEVEL, z)
+    banks.push(-1,1)
     if (i) {
       const a = i * 2
       indices.push(a - 2, a, a - 1, a - 1, a, a + 1)
@@ -232,11 +204,12 @@ function addWater(group) {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geo.setIndex(indices)
+  geo.setAttribute('bank',new THREE.Float32BufferAttribute(banks,1))
   const water = mesh(group, geo, new THREE.ShaderMaterial({
-    uniforms: { time: { value: 0 } },
-    vertexShader: 'varying vec3 wp; void main(){wp=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+    uniforms: { time: { value: 0 }, sun:{value:new THREE.Vector3()}, wet:{value:0}, tone:{value:1}, bed:{value:riverbed} },
+    vertexShader: 'varying vec3 wp; varying float bankFactor; attribute float bank; void main(){wp=position;bankFactor=bank;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
     fragmentShader: `
-      varying vec3 wp; uniform float time;
+      varying vec3 wp; varying float bankFactor; uniform sampler2D bed; uniform float time,wet,tone; uniform vec3 sun;
       void main(){
         vec3 view=normalize(cameraPosition-wp);
         float t=mod(time,3600.);
@@ -245,18 +218,21 @@ function addWater(group) {
         vec3 norm=normalize(vec3(cos(wp.x*3.+wp.z*1.8-t)*.045,1.,wave*.105));
         float fres=pow(1.-max(dot(norm,view),0.),2.4);
         vec3 col=mix(vec3(.08,.23,.20),vec3(.22,.39,.31),coarse*.67+.12*wave);
-        col=mix(col,vec3(.52,.70,.67),.17+.68*fres);
-        vec3 sun=normalize(vec3(-.79,.34,-.50));
+        float shallow=smoothstep(.40,.91,abs(bankFactor));
+        vec3 pebble=texture2D(bed,wp.xz*.65+norm.xz*.07).rgb;
+        col=mix(col,pebble*vec3(.58,.80,.70),shallow*.8);
+        col=mix(col,vec3(.58,.71,.73),.09+.72*fres);
+        wave+=wet*.35*sin(length(fract(wp.xz*1.7)-.5)*43.-t*8.);
         float spec=pow(max(dot(normalize(view+sun),norm),0.),120.);
         col+=vec3(1.,.77,.42)*spec*.95;
         float ripple=smoothstep(1.04,1.22,wave)*smoothstep(.58,.9,coarse);
         col+=vec3(.16,.22,.18)*ripple;
         col=mix(col,vec3(.61,.70,.64),smoothstep(30.,130.,length(cameraPosition-wp))*.5);
-        gl_FragColor=vec4(col,1.);
+        gl_FragColor=vec4(col*tone,1.);
         #include <colorspace_fragment>
       }`,
   }))
-  return water.material.uniforms.time
+  return water.material.uniforms
 }
 
 function addBridge(group) {
@@ -323,7 +299,7 @@ function addBridge(group) {
   geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
   geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
   geo.computeVertexNormals()
-  mesh(group,geo,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:1}))
+  mesh(group,geo,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:1})).userData.habitat='stone'
 }
 
 function scatterMeadow(group, random, birchPlot) {
@@ -335,7 +311,7 @@ function scatterMeadow(group, random, birchPlot) {
   for (let i=0;i<31500;i++) {
     const x=random()*98-59, z=random()*85-39
     const bank=abs(x-riverX(z))-riverWidth(z)
-    if (bank < .85) continue
+    if (bank < .85 || (x>25.4 && x<34.5 && z>-10.6 && z<-2.4)) continue
     const distance=pathDistance(x,z)
     if (distance<1.12 || (abs(z)<1.75 && abs(x)<BRIDGE_END+1.3)) continue
     if (Math.hypot(x+12,z-6)<1.12) continue
@@ -343,14 +319,14 @@ function scatterMeadow(group, random, birchPlot) {
     const y=ground(x,z)
     const angle=random()*PI*2
     const damp=bank<3.25
-    const tall=(.12+.23*random())*(damp?1.65:1)
+    const tall=(.09+.17*random())*(damp?1.62:1)
     const light=.72+random()*.39
     const b=grassBase.clone().multiplyScalar(light*.87)
-    const t=grassTip.clone().multiplyScalar(light)
+    const t=grassTip.clone().multiplyScalar(light*.9)
     for (let j=0;j<4;j++) {
       const a=angle+j*2.4
       const tx=x+sin(a)*.09, tz=z+cos(a)*.09
-      const w=.025+random()*.028
+      const w=.009+random()*.016
       positions.push(tx-w*cos(a),y-.025,tz+w*sin(a),tx+w*cos(a),y-.025,tz-w*sin(a),tx+sin(a)*.11+.06,y+tall*(.68+random()*.5),tz+cos(a)*.11)
       colors.push(b.r,b.g,b.b,b.r,b.g,b.b,t.r,t.g,t.b)
     }
@@ -361,7 +337,7 @@ function scatterMeadow(group, random, birchPlot) {
   const meadow=new THREE.BufferGeometry()
   meadow.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
   meadow.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
-  mesh(group,meadow,new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide}))
+  mesh(group,meadow,new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide})).userData.habitat='grass'
 
   const stoneColors=['#7d8479','#94998c','#a0a294','#b1b4a1','#868a77']
   for(let i=0;i<1550;i++) {
@@ -388,37 +364,46 @@ function scatterMeadow(group, random, birchPlot) {
       object.setMatrixAt(i,dummy.matrix)
       object.setColorAt(i,new THREE.Color(c))
     })
+    if (floral) object.userData.habitat='flowers'
     group.add(object)
   }
   scatter(rocks,new THREE.IcosahedronGeometry(1,0),false)
   scatter(blossoms,new THREE.IcosahedronGeometry(1,0),true)
 }
 
-export function buildTerrain(scene, memorial) {
+export function buildTerrain(scene, memorial, prefs = {}, reducedMotion) {
   const group=new THREE.Group()
   group.name='Riverbend valley'
   const previousFog=scene.fog
   scene.add(group)
   const random=randomSource(746)
-  skyAndLights(scene,group)
-  buildGround(group,random)
+  mountainRanges(group)
+  buildGround(group)
   trailGeometry(group)
-  const waterTime=addWater(group)
+  const riverbed=surfaceTexture('riverbed')
+  addBanks(group,riverbed)
+  const water=addWater(group,riverbed)
   addBridge(group)
   const birchPlot = memorial?.place === 'entrance' ? memorialPlots.entrance : null
   scatterMeadow(group,random,birchPlot)
   addForest(group,heightAt,riverX)
   const portraitRequests = new AbortController()
   addMemorial(group,heightAt,memorial,portraitRequests.signal)
+  const grounds = buildCourtyard(group,heightAt,memorial,portraitRequests.signal)
+  const climate = atmosphere(scene,group,water,prefs,reducedMotion)
   let disposed=false
   return {
     heightAt,
-    canWalkAt: (x, z) => canWalkAt(x, z, birchPlot),
-    update(elapsed) { waterTime.value=elapsed },
+    canWalkAt: (x, z) => canWalkAt(x, z, birchPlot) && grounds.canWalkAt(x,z),
+    setEnvironment: climate.configure,
+    setDetail: climate.setDetail,
+    visibility: climate.visibility,
+    update(elapsed, camera) { climate.tick(elapsed,camera, camera ? Math.abs(camera.position.x - riverX(camera.position.z)) : 12) },
     dispose() {
       if (disposed) return
       disposed=true
       portraitRequests.abort()
+      climate.dispose()
       scene.remove(group)
       scene.fog=previousFog
       const resources=new Set()

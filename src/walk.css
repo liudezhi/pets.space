@@ -42,3 +42,47 @@
   .garden-walk-pad button[data-direction=forward] { grid-column: 2; }
   .garden-walk-pad button[data-direction=left] { grid-column: 1; }
 }
+
+.neighborhood-guide, .nearby-visit {
+  position: absolute;
+  z-index: 2;
+  color: #fff9ed;
+  background: #273d32f5;
+  border: 1px solid #d5d7c275;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.neighborhood-guide {
+  top: 70px;
+  left: 16px;
+  max-width: min(260px, calc(100% - 32px));
+}
+.neighborhood-guide summary { cursor: pointer; padding: 11px 14px; }
+.neighborhood-guide[open] { padding: 0 10px 8px; }
+.neighborhood-guide[open] summary { padding-left: 3px; }
+.neighborhood-guide label { display: block; font-size: 12px; }
+.neighborhood-guide select {
+  display: block;
+  margin-top: 4px;
+  width: 100%;
+  min-height: 38px;
+  color: #283e33;
+  background: #faf6eb;
+  border-radius: 3px;
+}
+.neighborhood-guide button, .nearby-visit { min-height: 44px; padding: 6px 12px; }
+.neighborhood-guide div { display: flex; align-items: center; gap: 3px; font-size: 12px; }
+.neighborhood-guide div[hidden] { display: none; }
+.neighborhood-guide button:disabled { opacity: 0.45; }
+.nearby-visit {
+  bottom: 53px;
+  right: 16px;
+  max-width: min(45%, 260px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (any-pointer: coarse) {
+  .nearby-visit { bottom: 16px; }
+  .neighborhood-guide summary { min-height: 44px; }
+}

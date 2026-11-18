@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import {surfaceTexture} from './world-materials.js'
 
 const TAU = Math.PI * 2
 const UP = new THREE.Vector3(0, 1, 0)
@@ -70,9 +71,17 @@ function leafSpray(autumn = false) {
   })
 }
 
-function instanceMesh(group, geometry, material, entries) {
+function instanceMesh(group, geometry, material, entries, habitat) {
   if (!entries.length) return
   const mesh = new THREE.InstancedMesh(geometry, material, entries.length)
+  // Seasonal draw-count reductions should thin every canopy across the valley.
+  if (habitat === 'leaves') {
+    const random = seededRandom(6981)
+    for (let i=entries.length-1; i>0; i--) {
+      const j=Math.floor(random()*(i+1))
+      ;[entries[i],entries[j]]=[entries[j],entries[i]]
+    }
+  }
   const helper = new THREE.Object3D()
   for (let i = 0; i < entries.length; i++) {
     const { position, rotation, scale, color } = entries[i]
@@ -83,6 +92,7 @@ function instanceMesh(group, geometry, material, entries) {
     mesh.setMatrixAt(i, helper.matrix)
     if (color) mesh.setColorAt(i, color)
   }
+  if (habitat) mesh.userData.habitat = habitat
   mesh.computeBoundingSphere()
   group.add(mesh)
 }
@@ -127,34 +137,6 @@ function barkBuilder() {
     group.add(mesh)
   }
   return { limb, finish }
-}
-
-function coniferTexture() {
-  const random = seededRandom(88321)
-  return paintedTexture(256, ctx => {
-    ctx.fillStyle = '#585c4b'
-    ctx.fillRect(125, 24, 5, 227)
-    for (let row = 0; row < 30; row++) {
-      const t = row / 30
-      const y = 22 + t * 199
-      const width = (3 + t * 74) * (.85 + random() * .15)
-      for (const side of [-1, 1]) {
-        for (let i = 0; i < 25; i++) {
-          const reach = width * random()
-          const startY = y + random() * 8
-          const drop = reach * .38 + random() * 8
-          const light = Math.round(20 + random() * 16 + (side === -1 ? 5 : 0))
-          ctx.strokeStyle = 'hsl(111,15%,' + light + '%)'
-          ctx.lineWidth = 1.5 + random() * 2
-          ctx.beginPath()
-          ctx.moveTo(128 + side * reach * .25, startY)
-          ctx.lineTo(128 + side * reach, startY + drop)
-          ctx.lineTo(128 + side * (reach + 3), startY + drop - 5)
-          ctx.stroke()
-        }
-      }
-    }
-  })
 }
 
 // Paper birch has irregular lenticels across pale bark; keep the markings in the
@@ -213,13 +195,13 @@ function addBirches(group, heightAt, bark) {
   instanceMesh(group, trunk, new THREE.MeshStandardMaterial({ map: barkMap, roughness: .94 }), trunkEntries)
   instanceMesh(group, new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({
     map: leafSpray(true), side: THREE.DoubleSide, alphaTest: .3, roughness: 1, emissive: 0x2a1f09
-  }), leaves)
+  }), leaves, 'leaves')
 }
 
 export function addForest(group, heightAt, riverX) {
   const random = seededRandom(850312)
   const bark = barkBuilder()
-  const sprays = [], pines = []
+  const sprays = [], pines = [], matureOaks = []
   const ribbonVertices = [], ribbonIndices = [], ribbonColors = []
   const ribbons = [0xb6926e, 0xbeaa8a, 0x9e756b, 0xb39a74, 0x9bafa6]
   const shadeTexture = paintedTexture(128, (ctx) => {
@@ -322,13 +304,18 @@ export function addForest(group, heightAt, riverX) {
 
   oak(20, -16, 1.47, true)
   for (const [x, z, scale] of [[-30,38,.88], [-44,8,.86], [-36,-19,.75], [-32,-25,.81], [30,4,.79], [43,-34,.95], [38,-38,.81], [20,37,.84], [-21,-47,.88]]) {
-    if (Math.abs(x - riverX(z)) > 5.4) oak(x, z, scale)
+    if (Math.abs(x - riverX(z)) > 5.4) {
+      oak(x, z, scale)
+      const h=scale*9, position=new THREE.Vector3(x,heightAt(x,z)+h*.49,z)
+      const yaw=random()*Math.PI
+      for (let j=0;j<2;j++) matureOaks.push({position,rotation:[0,yaw+j*Math.PI/2,0],scale:[h*1.07,h,1]})
+    }
   }
   addBirches(group, heightAt, bark)
   bark.finish(group)
   instanceMesh(group, new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({
     map: leafSpray(), side: THREE.DoubleSide, alphaTest: .32, roughness: 1, emissive: 0x151b0e
-  }), sprays)
+  }), sprays, 'leaves')
 
   if (ribbonVertices.length) {
     const geo = new THREE.BufferGeometry()
@@ -336,7 +323,9 @@ export function addForest(group, heightAt, riverX) {
     geo.setAttribute('color', new THREE.Float32BufferAttribute(ribbonColors, 3))
     geo.setIndex(ribbonIndices)
     geo.computeVertexNormals()
-    group.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, vertexColors: true, roughness: .96 })))
+    const cloth = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, vertexColors: true, roughness: .96 }))
+    cloth.userData.habitat='ribbons'
+    group.add(cloth)
   }
 
   // Dark groups on the margins frame the composition; the entire central walking corridor stays clear.
@@ -350,10 +339,14 @@ export function addForest(group, heightAt, riverX) {
       const yaw = random() * Math.PI
       const l = .85 + random() * .28
       const color = new THREE.Color().setRGB(l, l, l * .93)
-      for (let j = 0; j < 2; j++) pines.push({ position, rotation: [0, yaw + j * Math.PI / 2, 0], scale: [h * .76, h, 1], color })
+      for (let j = 0; j < 2; j++) pines.push({ position, rotation: [0, yaw + j * Math.PI / 2, 0], scale: [h * .59, h, 1], color })
     }
   }
-  instanceMesh(group, new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
-    map: coniferTexture(), side: THREE.DoubleSide, alphaTest: .37
-  }), pines)
+  for(const [name,entries] of [['conifer',pines],['oak',matureOaks]]){
+    const map=surfaceTexture(name)
+    map.wrapS=map.wrapT=THREE.ClampToEdgeWrapping
+    instanceMesh(group,new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({
+      map,side:THREE.DoubleSide,alphaTest:.25
+    }),entries,name)
+  }
 }

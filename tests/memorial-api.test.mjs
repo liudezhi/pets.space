@@ -97,7 +97,11 @@ const post = (body) => ({ method: 'POST', body });
 const patch = (body) => ({ method: 'PATCH', body });
 
 async function joinGarden(client) {
-  const session = await success(await client('/api/session', post({ code: inviteCode })));
+  await success(await client('/api/session'));
+  const { order } = await success(await client('/api/orders', post({
+    product: 'foundation', inviteCode, requestId: crypto.randomUUID(),
+  })));
+  const session = await success(await client('/api/orders/' + order.id + '/pay', post({})));
   assert.equal(session.owner, true);
   assert.equal(typeof session.recoveryKey, 'string');
   assert.ok(session.recoveryKey.length);
@@ -121,24 +125,33 @@ async function listedIds(client, route) {
   return gardens.map(({ id }) => id).sort();
 }
 
-test('同源 JSON 开通会话，一次性恢复钥匙可以换设备', async (t) => {
+test('同源 JSON 模拟购买基础权益，一次性恢复钥匙可以换设备', async (t) => {
   const site = await garden(t);
   const owner = site.browser(), replacement = site.browser(), stranger = site.browser();
   assert.equal((await success(await owner('/api/session'))).owner, false);
   assert.equal((await owner('/api/mine')).status, 401);
-  assert.equal((await owner('/api/session', post({ code: 'wrong-code' }))).status, 401);
-  const badOrigin = await owner('/api/session', {
-    ...post({ code: inviteCode }), headers: { origin: 'https://unrelated.example' },
+  assert.equal((await owner('/api/session', post({ code: inviteCode }))).status, 410);
+  const order = { product: 'foundation', inviteCode, requestId: crypto.randomUUID() };
+  assert.equal((await owner('/api/orders', post({ ...order, inviteCode: 'wrong-code' }))).status, 401);
+  const badOrigin = await owner('/api/orders', {
+    ...post(order), headers: { origin: 'https://unrelated.example' },
   });
   assert.equal(badOrigin.status, 403);
-  const wrongType = await owner('/api/session', {
-    ...post({ code: inviteCode }), headers: { 'content-type': 'text/plain' },
+  const wrongType = await owner('/api/orders', {
+    ...post(order), headers: { 'content-type': 'text/plain' },
   });
   assert.equal(wrongType.status, 415);
   assert.equal((await success(await owner('/api/session'))).owner, false);
 
-  const firstKey = await joinGarden(owner);
-  assert.deepEqual(await success(await owner('/api/session', post({ code: inviteCode }))), { owner: true });
+  const pending = (await success(await owner('/api/orders', post(order)))).order;
+  assert.equal(pending.status, 'pending');
+  await site.restart();
+  const pendingPath = '/api/orders/' + pending.id;
+  assert.equal((await success(await owner(pendingPath))).order.status, 'pending');
+  const receipt = await success(await owner(pendingPath + '/pay', post({})));
+  assert.equal(receipt.owner, true);
+  const firstKey = receipt.recoveryKey;
+  assert.equal((await success(await owner('/api/session'))).owner, true);
   const pet = await createGarden(owner, '桂花');
   const restored = await success(await replacement('/api/restore', post({ key: firstKey })));
   assert.equal(restored.owner, true);

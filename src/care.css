@@ -1,0 +1,109 @@
+.archive-care {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+.archive-care > details {
+  border-bottom: 1px solid var(--line);
+  padding: 0.7rem 0;
+}
+.archive-care summary {
+  cursor: pointer;
+  min-height: 36px;
+  line-height: 36px;
+}
+.archive-care .garden-btn,
+.care-form .garden-btn {
+  display: inline-block;
+  margin: 5px 4px 6px 0;
+}
+.archive-care label,
+.care-form label,
+.climate-panel label {
+  display: block;
+  margin: 0.75rem 0;
+  font-size: 14px;
+}
+.archive-care p,
+.care-form p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.archive-care input,
+.archive-care textarea,
+.care-form input,
+.care-form textarea,
+.care-form select,
+.climate-panel select {
+  font: inherit;
+  color: var(--ink);
+  background: #fffef8;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 9px;
+  display: block;
+  width: 100%;
+}
+.care-form input[type='checkbox'],
+.climate-panel input[type='checkbox'] {
+  display: inline-block;
+  width: auto;
+  margin-left: 8px;
+}
+.care-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.care-images figure {
+  margin: 0;
+}
+.care-images img {
+  width: 100%;
+  max-height: 250px;
+  object-fit: contain;
+}
+.wish-list {
+  padding: 0;
+  list-style: none;
+}
+.wish-list li {
+  border-left: 2px solid #a7946b;
+  padding: 6px 12px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.wish-list button {
+  margin-left: 1em !important;
+}
+.climate-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 8px 14px;
+}
+.world-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin: 12px auto;
+  padding: 0 15px;
+}
+.world-tools button,
+.site-footer button {
+  min-height: 42px;
+  color: var(--ink);
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.site-footer {
+  border-top: 1px solid var(--line);
+  padding: 18px clamp(16px, 5.6vw, 90px);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}

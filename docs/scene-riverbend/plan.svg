@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 730" width="1080" height="730" role="img" aria-labelledby="title description" lang="zh-CN">
   <title id="title">栖光谷 · 河湾步行与机位总图</title>
-  <desc id="description">北向上。约一百五十米的步道从西南入口经南岸纪念石，跨过窄桥，到达东北低脊的许愿树。河流由西北流向东南。三个机位依次朝东北、西北和西南。示意图未按测绘比例绘制。</desc>
+  <desc id="description">北向上。步道从西南入口经南岸纪念石，过拱桥到许愿树，支路通向东岸山庭。河流由西北流向东南。四个机位依次朝东北、西北、西南和西。示意图未按测绘比例绘制。</desc>
   <defs>
     <clipPath id="map"><rect x="28" y="94" width="712" height="570" rx="12"/></clipPath>
     <linearGradient id="land" x2="0.82" y2="1">
@@ -34,7 +34,7 @@
   </defs>
   <rect width="1080" height="730" fill="#f7f6ed"/>
   <text x="33" y="53" font-weight="700" font-size="33">栖光谷 · 河湾步行与机位总图</text>
-  <text x="34" y="79" class="detail">西南入口草坡 — 南岸二级台地 — 东北低脊</text>
+  <text x="34" y="79" class="detail">西南桦坡 — 南岸河湾 — 东北许愿树 · 东岸山庭</text>
   <g clip-path="url(#map)">
     <rect x="28" y="94" width="712" height="570" fill="url(#land)"/>
     <rect x="28" y="94" width="712" height="570" fill="url(#grass)"/>
@@ -85,6 +85,8 @@
       <path d="M0 8v12m0-10-7-7" stroke="#69583a" stroke-width="5"/>
       <path d="M-15 6q-11-5-6-16 1-8 9-10 5-12 16-8 11-1 15 8 11 3 7 13 5 10-6 14-13 5-35-1z" fill="#608360" stroke="#435f46" stroke-width="2.2"/>
     </g>
+    <path d="M533 294Q572 310 597 304T669 322" fill="none" stroke="#937f57" stroke-width="4" stroke-dasharray="5 4"/>
+    <path d="M672 323l-54-20v40z" fill="#997da1" opacity=".2"/><path d="M672 323h-40" stroke="#654072" stroke-width="3" marker-end="url(#sight)"/><circle cx="672" cy="323" r="12" fill="#654072" stroke="#fffbf3" stroke-width="2.5"/><text x="672" y="328" text-anchor="middle" fill="white" style="fill:white;font:bold 14px Arial">D</text><text x="613" y="355" class="label">听风山庭</text>
     <!-- Map coordinates: screen up is north; arrows point NE, NW, SW. -->
     <g fill="#997da1" opacity=".18">
       <path d="M126 551l27-66 39 39z"/><path d="M357 425l-70-29 41-41z"/><path d="M620 177l-29 72-43-43z"/>
@@ -103,31 +105,30 @@
   </g>
   <rect x="28" y="94" width="712" height="570" rx="12" fill="none" stroke="#a8b59e"/>
   <g transform="translate(770 0)">
-    <text y="127" class="head">步行路线 · 约 150 米</text>
-    <path d="M0 149h276" stroke="#c6cec0"/>
-    <g class="camera"><circle cx="13" cy="184" r="12"/><circle cx="13" cy="283" r="12"/><circle cx="13" cy="382" r="12"/></g>
-    <g class="id"><text x="13" y="189">A</text><text x="13" y="288">B</text><text x="13" y="387">C</text></g>
+    <text y="128" class="head">河湾步道 · 四处停留</text>
+    <path d="M0 147h276" stroke="#c6cec0"/>
+    <g class="camera"><circle cx="13" cy="185" r="12"/><circle cx="13" cy="271" r="12"/><circle cx="13" cy="357" r="12"/><circle cx="13" cy="443" r="12"/></g>
+    <g class="id"><text x="13" y="190">A</text><text x="13" y="276">B</text><text x="13" y="362">C</text><text x="13" y="448">D</text></g>
     <g class="head">
-      <text x="35" y="191">入口望树 · 东北</text>
-      <text x="35" y="290">石前看水 · 西北</text>
-      <text x="35" y="389">树下回望 · 西南</text>
+      <text x="35" y="192">入口望树 · 东北</text>
+      <text x="35" y="278">石前看水 · 西北</text>
+      <text x="35" y="364">树下回望 · 西南</text>
+      <text x="35" y="450">听风山庭 · 西</text>
     </g>
     <g class="detail">
-      <text x="0" y="222">草坡高出河面约 7 米。</text>
-      <text x="0" y="247">循小径下坡，向树冠行进。</text>
-      <text x="0" y="321">站在二级台地，从相框上方</text>
-      <text x="0" y="346">看向上游的缓流。</text>
-      <text x="0" y="420">过桥登低脊，在树荫下</text>
-      <text x="0" y="445">回看南岸和入口草坡。</text>
+      <text y="220">从桦树下沿碎石路走向树冠。</text>
+      <text y="306">在雏菊边停步，望向上游。</text>
+      <text y="392">过桥登坡，回望来时的草甸。</text>
+      <text y="478">沿东岸支路入庭，坐看远山。</text>
     </g>
-    <path d="M0 477h276" stroke="#c6cec0"/>
-    <text y="511" class="head">图例</text>
-    <path d="M1 543h38" stroke="#a39169" stroke-width="8"/><path d="M1 543h38" stroke="#faf1d7" stroke-width="4.5"/>
-    <text x="55" y="549" class="detail">主步行线</text>
-    <path d="M1 580h38" stroke="#83b7b0" stroke-width="13"/><path d="M4 580h29" stroke="#ecfff6" stroke-width="2.6" marker-end="url(#flow)"/>
-    <text x="55" y="586" class="detail">水流方向</text>
-    <path d="m2 617 33-11v22z" fill="#997da1" opacity=".25"/><path d="M2 617h32" stroke="#654072" stroke-width="2.8" marker-end="url(#sight)"/>
-    <text x="55" y="623" class="detail">机位视向</text>
+    <path d="M0 504h276" stroke="#c6cec0"/>
+    <text y="539" class="head">图例</text>
+    <path d="M1 568h38" stroke="#a39169" stroke-width="8"/><path d="M1 568h38" stroke="#faf1d7" stroke-width="4.5"/>
+    <text x="55" y="574" class="detail">主步行线</text>
+    <path d="M1 601h38" stroke="#83b7b0" stroke-width="13"/><path d="M4 601h29" stroke="#ecfff6" stroke-width="2.6" marker-end="url(#flow)"/>
+    <text x="55" y="607" class="detail">水流方向</text>
+    <path d="m2 635 33-11v22z" fill="#997da1" opacity=".25"/><path d="M2 635h32" stroke="#654072" stroke-width="2.8" marker-end="url(#sight)"/>
+    <text x="55" y="641" class="detail">机位视向</text>
   </g>
   <text x="33" y="700" class="detail">北向上 · 地形关系示意，非测绘比例</text>
 </svg>

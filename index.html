@@ -32,9 +32,10 @@
       </div>
       <div class="scene-paging"><button id="prev" aria-label="上一个地点"><i data-icon="left"></i></button><button id="next" aria-label="下一个地点"><i data-icon="right"></i></button></div>
       <div id="world" class="world" hidden></div>
-      <div class="walk-menu" hidden><button data-leave><i data-icon="left"></i>结束漫游</button><span id="walk-place"></span></div>
+      <div class="walk-menu" hidden><button data-leave><i data-icon="left"></i>结束漫游</button><span id="walk-place"></span><button data-open="climate">时光与天气</button></div>
       <p class="walk-tip" hidden>WASD 或方向键移动 · 拖动环顾</p>
     </section>
+    <div class="world-tools"><button data-open="climate">时光与天气</button><button data-open="wishes">许愿树寄语</button></div>
     <div id="notice" role="status"></div>
     <button id="return-to-record" class="garden-btn" hidden>查看这座花园的纪念册</button>
     <section class="trail" aria-labelledby="trail-title">
@@ -42,6 +43,7 @@
       <div class="places" id="places"></div>
     </section>
   </main>
+  <footer class="site-footer"><button data-open="promise">保存约定</button><button data-open="handover">家庭交接</button></footer>
   <dialog id="panel" aria-labelledby="panel-title">
     <div class="panel-head"><h2 id="panel-title"></h2><button id="close-panel" aria-label="关闭"><i data-icon="close"></i></button></div>
     <div id="panel-body"></div>

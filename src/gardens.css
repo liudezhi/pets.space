@@ -21,3 +21,20 @@
 .entry .garden-btn { margin-top:14px; }
 @media(max-width:540px){.garden-record{grid-template-columns:1fr;gap:12px}.garden-record > img{max-height:31vh}.garden-text h3{font-size:29px}}
 @media(max-width:480px){nav{gap:12px}nav button i{display:none!important}.topbar{padding-inline:14px}}
+.garden-commerce { display:grid; gap:12px; margin-top:12px; }
+.garden-commerce:empty,.garden-family:empty { display:none; }
+.garden-commerce h4 { margin:0 0 4px; font:600 17px/1.5 var(--serif); }
+.garden-gifts { display:flex; flex-wrap:wrap; gap:8px 18px; margin:0; padding:0; list-style:none; color:var(--muted); font-size:14px; }
+.garden-shop,.order-history { padding:9px 0; border-top:1px solid var(--line); }
+.garden-shop summary,.order-history summary { cursor:pointer; min-height:42px; padding:8px 0; font-weight:500; }
+.order-history summary { font-size:14px; }
+.garden-shop .order-history { margin-top:10px; }
+.order-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; font-size:14px; }
+.order-row button { flex:none; }
+.garden-checkout { display:grid; gap:10px; padding:clamp(12px,3vw,22px); border:1px solid var(--line); border-radius:4px; background:#eef1e7; }
+.garden-checkout h3 { margin:0; font:600 21px/1.5 var(--serif); }
+.order-price { font:500 26px/1.4 Georgia,serif; }
+.garden-checkout .garden-status { margin:0; }
+.garden-checkout p:empty { display:none; }
+.garden-family:not(:empty) { padding-top:12px; border-top:1px solid var(--line); }
+.garden-family .garden-actions { margin:6px 0; }

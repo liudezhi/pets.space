@@ -90,3 +90,4 @@
   .owner-site input { top: 4px; right: 4px; bottom: auto; }
   .owner-site-copy small { font-size: 11px; }
 }
+.owner-field input[type=checkbox]{width:20px;height:20px;min-height:20px;justify-self:start}
