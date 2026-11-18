@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f5ee">
+  <link rel="icon" href="/node_modules/bootstrap-icons/icons/flower2.svg" type="image/svg+xml">
+  <meta name="description" content="在栖光谷的河湾、草坡与许愿树之间，探访一座为猫狗留下记忆的山谷花园。">
+  <title>栖光谷 · 河湾花园</title>
+</head>
+<body>
+  <a class="skip" href="#garden">跳至花园</a>
+  <header class="topbar">
+    <a class="brand" href="#stone" aria-label="栖光谷，返回河湾"><span class="seal" data-icon="flower"></span><span><strong>栖光谷</strong><small>PETS.SPACE</small></span></a>
+    <nav aria-label="主导航">
+      <a href="#garden" class="garden-link">花园漫游</a>
+      <button data-open="map"><i data-icon="map"></i>园区地图</button>
+      <button data-open="album"><i data-icon="book"></i>纪念册</button>
+    </nav>
+  </header>
+  <main id="garden">
+    <section class="vista" aria-label="河湾取景">
+      <img id="scene-photo" class="scene-photo" src="/docs/scene-riverbend/stone.webp" alt="雏菊、纪念石和背后的石桥与河流" fetchpriority="high">
+      <div class="shade"></div>
+      <div class="place-tag"><i data-icon="pin"></i><span id="place-tag">南岸 · 河湾</span></div>
+      <div class="hero-copy">
+        <p class="english" lang="en" id="english-name">THE RIVERBEND</p>
+        <h1 id="place-name">石前看水</h1>
+        <p id="place-copy">沿着石边的雏菊望去，河水正慢慢流过。</p>
+        <button class="enter" data-walk><i data-icon="walk"></i>进入 3D 漫游<i data-icon="right"></i></button>
+      </div>
+      <div class="scene-paging"><button id="prev" aria-label="上一个地点"><i data-icon="left"></i></button><button id="next" aria-label="下一个地点"><i data-icon="right"></i></button></div>
+      <div id="world" class="world" hidden></div>
+      <div class="walk-menu" hidden><button data-leave><i data-icon="left"></i>结束漫游</button><span id="walk-place"></span></div>
+      <p class="walk-tip" hidden>WASD 或方向键移动 · 拖动环顾</p>
+    </section>
+    <div id="notice" role="status"></div>
+    <section class="trail" aria-labelledby="trail-title">
+      <div class="section-head"><h2 id="trail-title">沿步道探访</h2><button data-open="map">查看地图<i data-icon="upRight"></i></button></div>
+      <div class="places" id="places"></div>
+    </section>
+  </main>
+  <dialog id="panel" aria-labelledby="panel-title">
+    <div class="panel-head"><h2 id="panel-title"></h2><button id="close-panel" aria-label="关闭"><i data-icon="close"></i></button></div>
+    <div id="panel-body"></div>
+  </dialog>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
