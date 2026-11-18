@@ -78,6 +78,11 @@
 .wish-list button {
   margin-left: 1em !important;
 }
+.climate-presets {
+  display: flex;
+  gap: 8px;
+  margin-block: .75rem;
+}
 .climate-panel {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));

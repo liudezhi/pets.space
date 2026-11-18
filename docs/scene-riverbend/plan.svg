@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 730" width="1080" height="730" role="img" aria-labelledby="title description" lang="zh-CN">
   <title id="title">栖光谷 · 河湾步行与机位总图</title>
-  <desc id="description">北向上。步道从西南入口经南岸纪念石，过拱桥到许愿树，支路通向东岸山庭。河流由西北流向东南。四个机位依次朝东北、西北、西南和西。示意图未按测绘比例绘制。</desc>
+  <desc id="description">北向上。步道从西南入口经南岸纪念石，过拱桥到许愿树，支路通向东岸山庭。河流由西北流向东南。四个机位依次朝东北、北偏东、西南和西。示意图未按测绘比例绘制。</desc>
   <defs>
     <clipPath id="map"><rect x="28" y="94" width="712" height="570" rx="12"/></clipPath>
     <linearGradient id="land" x2="0.82" y2="1">
@@ -87,12 +87,12 @@
     </g>
     <path d="M533 294Q572 310 597 304T669 322" fill="none" stroke="#937f57" stroke-width="4" stroke-dasharray="5 4"/>
     <path d="M672 323l-54-20v40z" fill="#997da1" opacity=".2"/><path d="M672 323h-40" stroke="#654072" stroke-width="3" marker-end="url(#sight)"/><circle cx="672" cy="323" r="12" fill="#654072" stroke="#fffbf3" stroke-width="2.5"/><text x="672" y="328" text-anchor="middle" fill="white" style="fill:white;font:bold 14px Arial">D</text><text x="613" y="355" class="label">听风山庭</text>
-    <!-- Map coordinates: screen up is north; arrows point NE, NW, SW. -->
+    <!-- Map coordinates: screen up is north; arrows point NE, NNE, SW. -->
     <g fill="#997da1" opacity=".18">
-      <path d="M126 551l27-66 39 39z"/><path d="M357 425l-70-29 41-41z"/><path d="M620 177l-29 72-43-43z"/>
+      <path d="M126 551l27-66 39 39z"/><path d="M357 425l0-73 50 19z"/><path d="M620 177l-29 72-43-43z"/>
     </g>
     <g stroke="#654072" stroke-width="3.2" fill="none" marker-end="url(#sight)">
-      <path d="m126 551 43-43"/><path d="m357 425-46-46"/><path d="m620 177-47 47"/>
+      <path d="m126 551 43-43"/><path d="m357 425 23-54"/><path d="m620 177-47 47"/>
     </g>
     <g class="camera"><circle cx="126" cy="551" r="12"/><circle cx="357" cy="425" r="12"/><circle cx="620" cy="177" r="12"/></g>
     <g class="id"><text x="126" y="556">A</text><text x="357" y="430">B</text><text x="620" y="182">C</text></g>
@@ -111,13 +111,13 @@
     <g class="id"><text x="13" y="190">A</text><text x="13" y="276">B</text><text x="13" y="362">C</text><text x="13" y="448">D</text></g>
     <g class="head">
       <text x="35" y="192">入口望树 · 东北</text>
-      <text x="35" y="278">石前看水 · 西北</text>
+      <text x="35" y="278">石前看水 · 北偏东</text>
       <text x="35" y="364">树下回望 · 西南</text>
       <text x="35" y="450">听风山庭 · 西</text>
     </g>
     <g class="detail">
       <text y="220">从桦树下沿碎石路走向树冠。</text>
-      <text y="306">在雏菊边停步，望向上游。</text>
+      <text y="306">隔着雏菊和相框看浅滩与拱桥。</text>
       <text y="392">过桥登坡，回望来时的草甸。</text>
       <text y="478">沿东岸支路入庭，坐看远山。</text>
     </g>

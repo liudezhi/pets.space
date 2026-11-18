@@ -1,5 +1,26 @@
 # 河湾样板 · 浏览器验收
 
+## 河湾实景美术修订 · 2026-11-19
+
+左列来自上一版 `07f90c3`，右列来自本次修订。两列均由 Chromium 156 实际运行 Three.js 漫游模块后截图。相机位置、朝向、65° 垂直视角与 1280 × 720 渲染尺寸相同，园区时钟固定在北京时间 9 月 23 日 15:45，秋季晴天。石前可以比较岩面、桥与近岸水色，入口可以比较白桦、林缘与远山之间的层次。
+
+![在同一石前和入口机位拍摄的旧版和新版河湾](docs/scene-riverbend/prototype/revision/before-after.webp)
+
+新版的正式落脚点另行实拍。桌面从石前能同时看见照片、桥拱和许愿树。树下回望时，布带位于近处枝条，桥位于远处河面。在 390 × 740 手机视口，从庭院落脚点可同时看清两只示例宠物的照片和花束。[石前全幅](docs/scene-riverbend/prototype/revision/stone.webp) · [树下回望](docs/scene-riverbend/prototype/revision/oak.webp) · [手机家庭庭院](docs/scene-riverbend/prototype/revision/family-mobile.webp)
+
+交付的独立 HTML 在断网 Chromium 中完成桌面步行和 390 × 844 触屏模拟。两端均能切换四个机位和三种气候组合，退出后可阅读纪念册。两端各记录到零条外部 HTTP 请求、控制台错误和未捕获异常。桌面轻量画布为 928 × 405，驻足自动和精细均为 1160 × 507；竖屏对应 312 × 459 与 390 × 574。浏览器的文件导航受到限制，测试通过本地文件选择器读入交付文件，再用 Blob 打开。360 × 740 禁用 WebGL 的模拟环境下仍能看四幅导览、打开纪念册并切换两个光照预设。
+
+独立性能采样使用 Chromium 156 的 SwiftShader 软件渲染，1280 × 720 视口，按完整绘制结束计帧。庭院驻足时以全分辨率绘制 18 帧，用时 20.38 秒，约 0.88 帧/秒。入口持续步行预热后，自动画质降到 832 × 468，24 帧用时 10.28 秒，约 2.33 帧/秒。软件渲染下步行有明显卡顿。带硬件加速的电脑、iOS 和 Android 真机帧率尚待测量。
+
+复拍时在两个版本各自完成 `npm ci`，另安装 Python Playwright 和 Chromium。第一遍把旧版的位置保存为 `rig.json`，第二遍将它用于新版。省略 `--rig` 可拍摄对应版本的正式落脚点。脚本另存相机参数、浏览器、渲染器、时刻和控制台错误。
+
+```sh
+python3 scripts/capture-scenes.py --site /tmp/pets-old --out /tmp/river-before
+python3 scripts/capture-scenes.py --site . --rig /tmp/river-before/rig.json --out /tmp/river-after
+```
+
+## 首版视觉参考与浏览器记录
+
 2026-11-19 · 本轮验收范围为概念图导览、可通行地形、地点直达与只读纪念册。首屏以「石前看水」为视觉参考。将原图与浏览器截图并排核对，再用模拟手机检查裁切。概念图中的相框和雏菊在两种界面上均可辨认；桌面操作位于相框右侧，手机操作位于画面下方。
 
 [原始参考](docs/scene-riverbend/stone.webp) · [桌面首屏](docs/scene-riverbend/prototype/desktop.webp) · [手机首屏](docs/scene-riverbend/prototype/mobile.webp)

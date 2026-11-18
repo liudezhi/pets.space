@@ -3,11 +3,13 @@ const bands = {
   time: { live: '园区时间', dawn: '日出', day: '白昼', sunset: '日落', night: '星夜' },
   season: { live: '园区季节', spring: '春', summer: '夏', autumn: '秋', winter: '冬' },
   weather: { live: '园区天气', clear: '晴', wind: '风', rain: '雨', snow: '雪', storm: '雷雨' },
+  quality: { auto: '自动 · 驻足时清晰', fine: '精细 · 优先画质', low: '轻量 · 优先流畅' },
 };
 function defaults() {
   return {
     time: 'live',
     season: 'live',
+    quality: 'auto',
     weather: 'live',
     sound: false,
     thunder: true,
@@ -49,11 +51,31 @@ export function climatePanel(body, current, apply, view) {
     } catch {}
     apply({ ...prefs });
   };
-  body.replaceChildren(label, explanation, controls);
+  const presets = document.createElement('div');
+  presets.className = 'climate-presets';
+  for (const [title, settings] of [
+    ['晴秋傍晚', { time: 'sunset', season: 'autumn', weather: 'clear' }],
+    ['跟随园区', { time: 'live', season: 'live', weather: 'live' }],
+  ]) {
+    const pick = document.createElement('button');
+    pick.type = 'button';
+    pick.className = 'garden-btn';
+    pick.textContent = title;
+    pick.onclick = () => {
+      for (const [key, value] of Object.entries(settings)) {
+        prefs[key] = value;
+        controls.querySelector(`select[name="${key}"]`).value = value;
+      }
+      update();
+    };
+    presets.append(pick);
+  }
+  body.replaceChildren(label, explanation, presets, controls);
   for (const [key, title] of [
     ['time', '时段'],
     ['season', '季节'],
     ['weather', '天气'],
+    ['quality', '画面精度'],
   ]) {
     const wrap = document.createElement('label');
     wrap.textContent = title;

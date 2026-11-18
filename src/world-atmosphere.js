@@ -1,28 +1,35 @@
 import * as THREE from 'three';
 import { gardenClimate } from './world-clock.js';
 import { valleySound } from './world-sound.js';
+import { surfaceTexture } from './world-materials.js';
+import { createSunlight } from './world-sunlight.js';
+import { cloudShader } from './valley-clouds.js';
 
 function buildSky(group) {
+  const cloudAtlas = surfaceTexture('valley-sky');
+  cloudAtlas.wrapT = THREE.ClampToEdgeWrapping;
   const uniforms = {
     sun: {value: new THREE.Vector3()}, moon: {value: new THREE.Vector3()}, phase: {value: 0},
     horizon: {value: new THREE.Color()}, zenith: {value: new THREE.Color()}, cloud: {value: new THREE.Color()},
-    cover: {value: .2}, clock: {value: 0}, flash: {value: 0},
+    cloudAtlas: {value: cloudAtlas}, day: {value: 1}, cover: {value: .2}, clock: {value: 0}, flash: {value: 0},
   };
   const sky = new THREE.Mesh(new THREE.SphereGeometry(420,32,16), new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, uniforms,
     vertexShader: 'varying vec3 direction; void main(){direction=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
     fragmentShader: `
       varying vec3 direction; uniform vec3 sun,moon,horizon,zenith,cloud;
-      uniform float phase,cover,clock,flash;
-      float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-      float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+1.),f.x),f.y);}
+      uniform float phase,cover,clock,flash,day;
+      uniform sampler2D cloudAtlas;
+      ${cloudShader}
       void main(){
-        vec3 d=normalize(direction);float h=max(d.y,0.);
-        vec3 color=mix(horizon,zenith,pow(h,.58));
+        vec3 d=normalize(direction);
+        float h=max(d.y,0.);
+        vec3 color=mix(horizon,zenith,pow(h,.55));
         float glow=max(dot(d,sun),0.);
-        float dusk=1.-smoothstep(.0,.42,abs(sun.y));
-        color+=vec3(1.,.26,.055)*pow(glow,8.)*dusk*.52;
-        color+=vec3(1.,.78,.52)*(pow(glow,240.)*.32+smoothstep(.99986,.99997,glow)*1.65);
+        float dusk=1.-smoothstep(.0,.39,abs(sun.y));
+        float facingSun=pow(glow,6.);
+        color+=vec3(.95,.32,.075)*facingSun*dusk*(1.-cover*.8)*.62;
+        color+=vec3(1.,.84,.60)*(pow(glow,340.)*.37+smoothstep(.99986,.99997,glow)*2.15)*(1.-cover*.91);
         // Project the illuminated lunar hemisphere onto its visible circular disc.
         vec3 right=normalize(cross(moon,vec3(0,1,0))), up=cross(right,moon);
         vec2 xy=vec2(dot(d,right),dot(d,up))/.018;
@@ -31,10 +38,7 @@ function buildSky(group) {
           float light=dot(vec3(xy,sqrt(1.-r2)),vec3(sin(phase),0.,-cos(phase)));
           color=mix(color,vec3(.78,.84,.94),smoothstep(-.05,.05,light)*(1.-smoothstep(.87,1.,r2)));
         }
-        vec2 p=d.xz/(max(h,.035)+.24)*vec2(2.8,7.)+vec2(clock*.003,0.);
-        float field=.58*noise(p)+.28*noise(2.1*p)+.14*noise(4.4*p);
-        float opacity=smoothstep(.78-cover*.5,.96-cover*.42,field)*smoothstep(.0,.14,h);
-        color=mix(color,cloud,opacity*.87);
+        color=skyWithClouds(color,d,sun,zenith,cloud,cover,day,clock,cloudAtlas);
         color+=vec3(.28,.34,.44)*flash;
         gl_FragColor=vec4(color,1.);
         #include <colorspace_fragment>
@@ -53,7 +57,7 @@ function buildSky(group) {
   const stars = new THREE.Points(geo,new THREE.PointsMaterial({size:1.35,sizeAttenuation:false,color:0xf1eee1,transparent:true,depthWrite:false,fog:false}));
   stars.renderOrder = -3;
   group.add(stars);
-  return {uniforms, stars};
+  return {uniforms, stars, sky};
 }
 
 function precipitation(group, snow) {
@@ -92,8 +96,11 @@ function precipitation(group, snow) {
 
 // Apply colour and upward-facing snow patches in the material's usual lighting path.
 function seasonalMaterials(group) {
-  const wetSurfaces = [];
+  const wetSurfaces = new Map();
+  const compiled = new Set();
+  const wetTint = new THREE.Color('#bec9cf');
   const uniforms = {airTone:{value:new THREE.Color()},seasonTint:{value:new THREE.Color(1,1,1)},snowAmount:{value:0},windTime:{value:0},windForce:{value:.1}};
+  const meadowTint = { value: new THREE.Color(1, 1, 1) };
   const leaves=[], grasses=[], blooms=[], woods=[];
   let detail = 1, currentSeason;
   group.traverse(object=>{
@@ -104,11 +111,19 @@ function seasonalMaterials(group) {
     if(role==='grass') grasses.push(object);
     if(role==='flowers') blooms.push(object);
     const mat=object.material;
-    if ((role==='stone'||role==='ground'||role==='trail') && !wetSurfaces.includes(mat)) wetSurfaces.push(mat);
+    if (compiled.has(mat)) return;
+    compiled.add(mat);
+    if (['stone','ground','trail'].includes(role) && mat.color) {
+      wetSurfaces.set(mat, { color: mat.color.clone(), roughness: mat.roughness });
+    }
     const vegetation=['leaves','grass','flowers','ground'].includes(role);
     const bend=role==='grass'||role==='ribbons'||role==='leaves';
-    mat.onBeforeCompile=shader=>{
+    const previousCompile = mat.onBeforeCompile;
+    const previousKey = mat.customProgramCacheKey();
+    mat.onBeforeCompile=(shader, renderer)=>{
+      previousCompile.call(mat, shader, renderer);
       Object.assign(shader.uniforms, uniforms);
+      if (role === 'grass' || role === 'ground') shader.uniforms.seasonTint = meadowTint;
       shader.uniforms.airAmount={value:object.userData.air??0};
       shader.vertexShader='varying vec3 envPos; uniform float windTime,windForce;\n'+shader.vertexShader;
       let motion='';
@@ -130,18 +145,21 @@ function seasonalMaterials(group) {
           'diffuseColor.rgb=mix(diffuseColor.rgb,airTone,airAmount);');
       }
     };
-    mat.customProgramCacheKey=()=> 'garden-climate-'+role;
+    mat.customProgramCacheKey=()=> previousKey + '/garden-climate-' + role;
   });
   const tint={spring:0xe0ffd0,summer:0xc5efa8,autumn:0xffc775,winter:0xbcc0ab};
+  // Meadows keep patches of sage through autumn while deciduous crowns turn gold.
+  const meadow = {spring: 0xe2f0c9, summer: 0xe3f0d2, autumn: 0xede0bf, winter: 0xb0b2a7};
   function adjustDensity(){
     if(!currentSeason)return;
     const foliage={spring:.8,summer:1,autumn:.72,winter:.09}[currentSeason];
+    const grassCover=currentSeason==='winter' ? .16 : 1;
     const flowers={spring:1,summer:.72,autumn:.24,winter:0}[currentSeason];
     for(const o of leaves) o.count=Math.ceil(o.instanceMatrix.count*foliage*detail);
     for(const o of blooms) o.count=Math.ceil(o.instanceMatrix.count*flowers*detail);
     for(const o of grasses){
       const triangles=o.geometry.attributes.position.count/3;
-      o.geometry.setDrawRange(0,3*Math.floor(triangles*detail));
+      o.geometry.setDrawRange(0,3*Math.floor(triangles*detail*grassCover));
     }
   }
   return {
@@ -156,8 +174,13 @@ function seasonalMaterials(group) {
         if(s.weather==='snow')wood.material.color.lerp(new THREE.Color('#a8bcc6'),.22*(.3+.7*day));
       }
       uniforms.seasonTint.value.set(tint[s.season]);
+      meadowTint.value.set(meadow[s.season]);
       const wet=s.weather==='rain'||s.weather==='storm';
-      for (const mat of wetSurfaces){mat.roughness=wet?.42:.98; mat.color.set(wet?'#c7ced1':'#ffffff');}
+      for (const [mat, dry] of wetSurfaces) {
+        mat.color.copy(dry.color);
+        if (wet) mat.color.multiply(wetTint);
+        mat.roughness = wet ? Math.min(dry.roughness,.48) : dry.roughness;
+      }
       uniforms.snowAmount.value=s.weather==='snow'?1.38:s.season==='winter'?.48:0;
       uniforms.windForce.value={clear:.16,wind:1,rain:.48,snow:.28,storm:1.3}[s.weather];
       grasses.forEach(o=>o.visible=s.weather!=='snow');
@@ -168,10 +191,11 @@ function seasonalMaterials(group) {
 }
 
 export function atmosphere(scene, group, water, prefs, reducedMotion) {
-  const {uniforms,stars}=buildSky(group);
+  const {uniforms,stars,sky}=buildSky(group);
+  if (water.cloudAtlas) water.cloudAtlas.value = uniforms.cloudAtlas.value;
   const rain=precipitation(group,false), snow=precipitation(group,true);
-  const hemi=new THREE.HemisphereLight(0xffefce,0x899377,1.1), directional=new THREE.DirectionalLight(0xffdcaa,2);
-  group.add(hemi,directional);
+  const sunlight = createSunlight(group);
+  const { fill: hemi, key: directional } = sunlight;
   const sound=valleySound(), seasons=seasonalMaterials(group);
   scene.fog=new THREE.FogExp2('#c1cfc8',.008);
   const ridges=[], grasses=[], lamps=[];
@@ -182,7 +206,7 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
     state=gardenClimate(prefsNow);
     const now=Date.now();
     group.traverse(o=>{ if(o.userData.visibleUntil && o.userData.visibleUntil<=now) o.visible=false; });
-    const altitude=state.sun[1], day=THREE.MathUtils.smoothstep(altitude,-.16,.28);
+    const altitude=state.sun[1], day=THREE.MathUtils.smoothstep(altitude,-.15,.13);
     const warm=(1-THREE.MathUtils.smoothstep(Math.abs(altitude),.025,.32))*THREE.MathUtils.smoothstep(altitude,-.17,-.02);
     const cover={clear:.17,wind:.42,rain:.91,snow:.83,storm:1}[state.weather];
     function palette(target,night,noon,twilight,storm){
@@ -190,23 +214,32 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
         .lerp(temp.set(storm),cover*.55*day);
     }
     uniforms.sun.value.fromArray(state.sun); uniforms.moon.value.fromArray(state.moon); uniforms.phase.value=state.moonAge*2*Math.PI;
-    palette(uniforms.horizon.value,'#263452','#d9e4dc','#fbb78d','#a6b6be');
-    palette(uniforms.zenith.value,'#080f26','#558bb2','#8888a5','#6a7884');
-    palette(uniforms.cloud.value,'#243047','#fff5e2','#ffb69c','#a2abb2');
+    palette(uniforms.horizon.value,'#23304b','#d9e7ed','#ffddb4','#97a6af');
+    palette(uniforms.zenith.value,'#080d20','#5186b4','#778ca9','#667889');
+    palette(uniforms.cloud.value,'#1b2640','#f8faf6','#ffdcba','#a8b3bd');
+    uniforms.day.value = day;
     uniforms.cover.value=cover;
     lamps.forEach(o => o.material.emissiveIntensity = .09 + (1-day)*1.5);
     stars.material.opacity=(1-day)*(1-cover*.87); stars.visible=stars.material.opacity>.035;
-    hemi.intensity=.64+day*1.04;
-    hemi.color.set('#a3badb').lerp(temp.set('#f7eccc'),day).lerp(temp.set('#f7c8ab'),warm*.4);
-    hemi.groundColor.set(day>.45?'#939777':'#627496');
-    directional.position.fromArray(altitude>-.06?state.sun:state.moon);
-    directional.position.y=Math.max(.13,directional.position.y);
-    directional.color.set('#a9c8ff').lerp(temp.set('#fff0c6'),day).lerp(temp.set('#ffa66b'),warm);
-    directional.intensity=(.55+day*1.8)*(1-cover*.56);
+    hemi.intensity = .38 + day*(1.18 + cover*.32);
+    hemi.color.set('#9db8da').lerp(temp.set('#e3effc'),day);
+    hemi.groundColor.set(day>.45?'#9a9276':'#657590');
+    directional.color.set('#acc5fa').lerp(temp.set('#fff4dc'),day).lerp(temp.set('#ffd39d'),warm);
+    directional.intensity=(.29+day*2.28)*(1-cover*.72);
+    sunlight.update(altitude>-.055?state.sun:state.moon, state.season, day, cover);
     scene.fog.color.copy(uniforms.horizon.value);
     scene.fog.density=.0055+cover*.006;
-    ridges.forEach(o=>o.material.color.copy(base.set('#65718e')).lerp(temp.set('#ffffff'),day));
+    for (const ridge of ridges) {
+      const wooded = ridge.userData.forest;
+      const sunlit = wooded && state.season === 'autumn' ? '#f2d69d' : '#f4f3e8';
+      ridge.material.color.copy(base.set(wooded ? '#515c73' : '#606e88'))
+        .lerp(temp.set(sunlit), day).lerp(temp.set('#e5c1aa'), warm*.24);
+    }
     grasses.forEach(o=>o.material.color.set('#5e6985').lerp(temp.set('#ffffff'),day));
+    if (water.horizon) water.horizon.value.copy(uniforms.horizon.value);
+    if (water.zenith) water.zenith.value.copy(uniforms.zenith.value);
+    if (water.cloud) water.cloud.value=cover;
+    if (water.cloudTint) water.cloudTint.value.copy(uniforms.cloud.value);
     water.sun.value.copy(uniforms.sun.value); water.tone.value=.23+day*.77;
     water.wet.value=state.weather==='rain'||state.weather==='storm'?1:0;
     seasons.change(state,day,uniforms.horizon.value); rain.visible=Boolean(water.wet.value); snow.visible=state.weather==='snow';
@@ -220,6 +253,10 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
     configure(patch) { prefsNow={...prefsNow,...patch};refresh(); },
     tick(time, camera, riverDistance){
       lastDistance=riverDistance;
+      if (camera) {
+        sky.position.copy(camera.position);
+        stars.position.copy(camera.position);
+      }
       if(Date.now()>nextUpdate) refresh();
       const quiet=prefsNow.reduceMotion ?? reducedMotion?.matches;
       const t=quiet?0:time;
@@ -232,6 +269,6 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
       if(thunder && cycle!==previousThunder){previousThunder=cycle;if(prefsNow.thunder !== false) sound.thunder();}
     },
     visibility(){ sound.configure(prefsNow.sound,state.weather,lastDistance); },
-    dispose(){sound.dispose();},
+    dispose(){sound.dispose();sunlight.dispose();},
   };
 }

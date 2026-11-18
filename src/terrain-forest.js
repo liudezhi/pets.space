@@ -1,7 +1,8 @@
 import * as THREE from 'three'
-import {surfaceTexture} from './world-materials.js'
+import { surfaceTexture } from './world-materials.js'
+import { addWishingOak } from './forest-oak.js'
 
-const TAU = Math.PI * 2
+const TAU = 2 * Math.PI
 const UP = new THREE.Vector3(0, 1, 0)
 
 function seededRandom(seed) {
@@ -13,8 +14,7 @@ function seededRandom(seed) {
 
 function paintedTexture(size, paint) {
   const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
+  canvas.width = canvas.height = size
   paint(canvas.getContext('2d'), size)
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
@@ -22,331 +22,348 @@ function paintedTexture(size, paint) {
   return texture
 }
 
-// One alpha-tested spray contains individual leaves, small branchlets and light gaps.
-// Intersecting sprays preserve the crown silhouette looking up from underneath it.
-function leafSpray(autumn = false) {
-  const random = seededRandom(58202)
-  return paintedTexture(256, (ctx) => {
-    ctx.lineCap = 'round'
-    function twig(x, y, angle, length, level) {
-      const endX = x + Math.cos(angle) * length
-      const endY = y + Math.sin(angle) * length
-      ctx.beginPath()
-      ctx.moveTo(x, y)
-      ctx.quadraticCurveTo((x + endX) / 2 + 3, (y + endY) / 2, endX, endY)
-      ctx.strokeStyle = level === 2 ? '#706c48' : '#85805a'
-      ctx.lineWidth = level * .8 + .6
-      ctx.stroke()
-      if (level > 0) {
-        for (let i = 0; i < 6; i++) {
-          const t = .18 + i * .14
-          const fan = (i % 2 ? 1 : -1) * (.5 + random() * .65)
-          twig(x + (endX - x) * t, y + (endY - y) * t, angle + fan, length * (.33 + random() * .19), level - 1)
-        }
-      } else {
-        for (let i = 0; i < 6; i++) {
-          const t = .1 + i * .17
-          const cx = x + (endX - x) * t
-          const cy = y + (endY - y) * t
-          const tilt = angle + (i % 2 ? .82 : -.82)
-          const size = 4.3 + random() * 3.8
-          ctx.save()
-          ctx.translate(cx, cy)
-          ctx.rotate(tilt)
-          const light = Math.round(31 + random() * 26 + (185 - cy) * .04)
-          const hue = autumn ? 39 + Math.round(random() * 16) : 68 + Math.round(random() * 13)
-          ctx.fillStyle = autumn ? `hsl(${hue},64%,${light + 13}%)` : `hsl(${hue},28%,${light}%)`
-          ctx.beginPath()
-          ctx.moveTo(0, 0)
-          ctx.quadraticCurveTo(size * .32, -size * .52, size, 0)
-          ctx.quadraticCurveTo(size * .42, size * .47, 0, 0)
-          ctx.fill()
-          ctx.restore()
-        }
-      }
-    }
-    twig(126, 221, -1.58, 151, 2)
-    twig(122, 203, -2.2, 100, 2)
-    twig(128, 207, -.83, 111, 2)
-  })
+function plantMap(name) {
+  const texture = surfaceTexture(name)
+  texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping
+  return texture
 }
 
-function instanceMesh(group, geometry, material, entries, habitat) {
-  if (!entries.length) return
-  const mesh = new THREE.InstancedMesh(geometry, material, entries.length)
-  // Seasonal draw-count reductions should thin every canopy across the valley.
-  if (habitat === 'leaves') {
-    const random = seededRandom(6981)
-    for (let i=entries.length-1; i>0; i--) {
-      const j=Math.floor(random()*(i+1))
-      ;[entries[i],entries[j]]=[entries[j],entries[i]]
-    }
+// A spray contains leaves at many angles. Fold an upward skylight normal into
+// the card's normal and give both faces equal transmission in backlight.
+function sprayMaterial(map, alphaTest = .16) {
+  const mat = new THREE.MeshLambertMaterial({map,alphaTest,alphaToCoverage:true,side:THREE.DoubleSide})
+  mat.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace('#include <defaultnormal_vertex>',
+      '#include <defaultnormal_vertex>\ntransformedNormal = normalize(.27*normalize(transformedNormal) + mat3(viewMatrix)*vec3(0.,.80,0.));')
+    shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>',
+      '#include <normal_fragment_begin>\nnormal *= faceDirection;')
+  }
+  mat.customProgramCacheKey=()=> 'spray-transmission'
+  return mat
+}
+
+function plantBatch(group, material, instances, role, label, anchored = false) {
+  const geometry = new THREE.PlaneGeometry(1, 1)
+  if (anchored) geometry.translate(0, .5, 0)
+  const mesh = new THREE.InstancedMesh(geometry, material, instances.length)
+  mesh.name = label
+  const random = seededRandom(6341)
+  // Seasons reduce the submitted instance count. Shuffle across patches so that
+  // thinning reveals twig silhouettes everywhere rather than erasing whole trees.
+  for (let end = instances.length - 1; end > 0; end--) {
+    const i = Math.floor(random() * (end + 1))
+    const entry = instances[end]
+    instances[end] = instances[i]
+    instances[i] = entry
   }
   const helper = new THREE.Object3D()
-  for (let i = 0; i < entries.length; i++) {
-    const { position, rotation, scale, color } = entries[i]
+  instances.forEach(({ position, rotation, size, color }, i) => {
     helper.position.copy(position)
     helper.rotation.set(...rotation)
-    helper.scale.set(...scale)
+    helper.scale.set(size[0], size[1], 1)
     helper.updateMatrix()
     mesh.setMatrixAt(i, helper.matrix)
     if (color) mesh.setColorAt(i, color)
-  }
-  if (habitat) mesh.userData.habitat = habitat
+  })
+  if (role) mesh.userData.habitat = role
   mesh.computeBoundingSphere()
   group.add(mesh)
 }
 
-// Joined tapered rings allow one bark mesh to contain irregular limbs of varying girth.
-function barkBuilder() {
-  const vertices = [], colors = [], indices = []
-  const p = new THREE.Vector3()
-  const tint = new THREE.Color()
-  function limb(points, radii, sides, color, random) {
-    const start = vertices.length / 3
-    const axis = points.at(-1).clone().sub(points[0]).normalize()
-    const cross = Math.abs(axis.y) > .86 ? new THREE.Vector3(1, 0, 0) : UP
-    const basis = axis.clone().cross(cross).normalize()
-    const normal = new THREE.Vector3()
-    const grain = Array.from({ length: sides }, () => .84 + random() * .29)
-    for (let r = 0; r < points.length; r++) {
-      const direction = points[Math.min(r + 1, points.length - 1)].clone().sub(points[Math.max(0, r - 1)]).normalize()
-      const across = direction.clone().cross(basis).normalize()
-      normal.crossVectors(across, direction).normalize()
-      for (let j = 0; j < sides; j++) {
-        const angle = j * TAU / sides
-        const radius = radii[r] * grain[j]
-        p.copy(points[r]).addScaledVector(normal, Math.cos(angle) * radius).addScaledVector(across, Math.sin(angle) * radius)
-        vertices.push(p.x, p.y, p.z)
-        tint.copy(color).multiplyScalar(grain[j] * (.9 + r * .026))
-        colors.push(tint.r, tint.g, tint.b)
-        if (r) {
-          const a = start + (r - 1) * sides + j, b = start + (r - 1) * sides + ((j + 1) % sides)
-          indices.push(a, b, a + sides, b, b + sides, a + sides)
-        }
-      }
+function paperBark(random) {
+  const map = paintedTexture(384, (ctx, size) => {
+    ctx.fillStyle = '#c8c4af'
+    ctx.fillRect(0, 0, size, size)
+    // Thin overlapping sheets of bark expose buff-colored bands and horizontal lenticels.
+    for (let i = 0; i < 1450; i++) {
+      const x = random() * size, y = random() * size
+      ctx.fillStyle = i % 3 ? 'rgba(252,248,225,.20)' : 'rgba(102,99,83,.15)'
+      ctx.fillRect(x, y, 3 + random() ** 2 * 77, .6 + random() ** 2 * 6)
     }
-  }
-  function finish(group) {
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-    geometry.setIndex(indices)
-    geometry.computeVertexNormals()
-    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }))
-    group.add(mesh)
-  }
-  return { limb, finish }
-}
-
-// Paper birch has irregular lenticels across pale bark; keep the markings in the
-// shared trunk atlas so their cost is independent of camera distance.
-function addBirches(group, heightAt, bark) {
-  const random = seededRandom(93201)
-  const barkMap = paintedTexture(256, ctx => {
-    ctx.fillStyle = '#d9d3bd'
-    ctx.fillRect(0, 0, 256, 256)
-    for (let i = 0; i < 600; i++) {
-      const x = random() * 256, y = random() * 256
-      ctx.fillStyle = random() < .55 ? 'rgba(127,120,103,.1)' : 'rgba(255,251,224,.22)'
-      ctx.fillRect(x, y, 4 + random() * 29, 1 + random() * 4)
-    }
-    for (let i = 0; i < 65; i++) {
-      const x = random() * 256, y = random() * 256
-      const length = 4 + random() ** 2 * 41
+    function fissure(x,y,w,h) {
       ctx.beginPath()
-      ctx.moveTo(x, y)
-      ctx.lineTo(x + length * .37, y - 1 - random() * 1.1)
-      ctx.lineTo(x + length, y - random())
-      ctx.lineTo(x + length * .32, y + random() * 1.7)
-      ctx.fillStyle = i % 4 ? '#635e52' : '#383934'
+      ctx.moveTo(x - w/2, y)
+      ctx.lineTo(x - w*.19, y - h*.73)
+      ctx.lineTo(x + w*.08, y - h*.18)
+      ctx.lineTo(x + w*.5, y - h*.29)
+      ctx.lineTo(x + w*.19, y + h*.27)
+      ctx.lineTo(x - w*.08, y + h*.51)
+      ctx.closePath()
       ctx.fill()
     }
-  })
-  barkMap.wrapT = THREE.RepeatWrapping
-  barkMap.repeat.y = 3
-  const trunk = new THREE.CylinderGeometry(.065, .18, 1, 13, 10)
-  trunk.translate(0, .5, 0)
-  const trunkEntries = [], leaves = []
-  const branchColor = new THREE.Color(0x897b67)
-  for (const [x, z, height, lean] of [[-37,23,7.7,.45],[-35,21,8.9,-.35],[-30,29,7.9,.42]]) {
-    const ground = heightAt(x, z) - .08
-    trunkEntries.push({
-      position: new THREE.Vector3(x, ground, z), rotation: [0, 0, -Math.atan(lean / height)],
-      scale: [1, height, 1]
-    })
-    for (let j = 0; j < 16; j++) {
-      const t = .33 + j * .037, direction = j * 2.39996 + random() * .45
-      const length = (.75 + 3.1 * Math.sin(t * Math.PI)) * (.65 + random() * .28)
-      const dx = Math.cos(direction) * length, dz = Math.sin(direction) * length
-      const origin = new THREE.Vector3(x + lean * t, ground + height * t, z)
-      const fork = origin.clone().add(new THREE.Vector3(dx * .64, .68, dz * .64))
-      const tip = origin.clone().add(new THREE.Vector3(dx, .7 + random() * .6, dz))
-      bark.limb([origin, fork, tip], [.073, .041, .014], 6, branchColor, random)
-      for (let k = 0; k < 8; k++) {
-        const a = direction + random() * 2 - 1
-        const length = .22 + random() * .75
-        const pos = fork.clone().lerp(tip, random()).add(new THREE.Vector3(Math.cos(a) * length, -.04 - random() * .55, Math.sin(a) * length))
-        const size = .87 + random() * .48
-        leaves.push({ position: pos, rotation: [random() * 1.7 - .85, a, random() - .5], scale: [size * 1.07, size, size] })
-      }
+    for (let i = 0; i < 220; i++) {
+      const x = random()*size, y = random()*size
+      const w = 3 + random() ** 2 * 82
+      const h = .7 + random() ** 4 * 9
+      ctx.fillStyle = random() > .3 ? '#67675d' : '#444941'
+      for (const dx of [-size,0,size]) fissure(x + dx,y,w,h)
     }
-  }
-  instanceMesh(group, trunk, new THREE.MeshStandardMaterial({ map: barkMap, roughness: .94 }), trunkEntries)
-  instanceMesh(group, new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({
-    map: leafSpray(true), side: THREE.DoubleSide, alphaTest: .3, roughness: 1, emissive: 0x2a1f09
-  }), leaves, 'leaves')
+  })
+  map.wrapS = map.wrapT = THREE.RepeatWrapping
+  return map
 }
 
-export function addForest(group, heightAt, riverX) {
-  const random = seededRandom(850312)
-  const bark = barkBuilder()
-  const sprays = [], pines = [], matureOaks = []
-  const ribbonVertices = [], ribbonIndices = [], ribbonColors = []
-  const ribbons = [0xb6926e, 0xbeaa8a, 0x9e756b, 0xb39a74, 0x9bafa6]
-  const shadeTexture = paintedTexture(128, (ctx) => {
-    const glow = ctx.createRadialGradient(64, 64, 0, 64, 64, 61)
-    glow.addColorStop(0, 'rgba(32,41,25,.48)')
-    glow.addColorStop(.47, 'rgba(41,51,34,.29)')
-    glow.addColorStop(1, 'rgba(48,53,37,0)')
-    ctx.fillStyle = glow
-    ctx.fillRect(0, 0, 128, 128)
-  })
-  const shadeMaterial = new THREE.MeshBasicMaterial({ map: shadeTexture, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 })
-  function shade(x, z, width) {
-    const geo = new THREE.PlaneGeometry(width, width, 9, 9)
-    geo.rotateX(-Math.PI / 2)
-    const positions = geo.attributes.position
-    for (let i = 0; i < positions.count; i++) {
-      const px = positions.getX(i) + x
-      const pz = positions.getZ(i) + z
-      positions.setXYZ(i, px, heightAt(px, pz) + .045, pz)
-    }
-    group.add(new THREE.Mesh(geo, shadeMaterial))
-  }
-
-  function ribbon(start, length) {
-    const base = ribbonVertices.length / 3
-    const tint = new THREE.Color(ribbons[Math.floor(random() * ribbons.length)])
-    const angle = random() * TAU
-    const width = .052 + random() * .045
-    for (let k = 0; k <= 5; k++) {
-      const t = k / 5
-      const cx = start.x + Math.sin(t * 5 + angle) * .06 * t + t * .13
-      const cz = start.z + Math.sin(t * 4) * .07
-      const cy = start.y - length * t
-      const dx = Math.cos(angle + t * .85) * width * .5
-      const dz = Math.sin(angle + t * .85) * width * .5
-      ribbonVertices.push(cx - dx, cy, cz - dz, cx + dx, cy, cz + dz)
-      for (let j = 0; j < 2; j++) ribbonColors.push(tint.r, tint.g, tint.b)
-      if (k) {
-        const a = base + (k - 1) * 2
-        ribbonIndices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2)
+// A ring smoothly turns with each curved stem; UV distance follows its length so
+// short forked limbs carry the same bark scale as the trunk.
+function woodBatch() {
+  const positions = [], indices = [], colors = [], uv = []
+  const basalBark = new THREE.Color('#615d4c')
+  function tube(points, radii, segments, color, barkScale = 1.5, rootCollar = false) {
+    const base = positions.length/3
+    let distance = 0
+    let right = new THREE.Vector3(1,0,0)
+    const grain = new THREE.Color()
+    points.forEach((center,k) => {
+      if (k) distance += center.distanceTo(points[k-1])
+      const axis = points[Math.min(points.length-1,k+1)].clone().sub(points[Math.max(0,k-1)]).normalize()
+      right.addScaledVector(axis, -axis.dot(right))
+      if (right.lengthSq() < .01) right.copy(UP).cross(axis)
+      right.normalize()
+      const across = axis.clone().cross(right).normalize()
+      for(let j=0;j<=segments;j++) {
+        const a = TAU*j/segments
+        const radial = radii[k] * (1 + .052*Math.sin(3*a + .37*k) + .026*Math.cos(7*a+.12*k))
+        const v = center.clone().addScaledVector(right,radial*Math.cos(a)).addScaledVector(across,radial*Math.sin(a))
+        positions.push(v.x,v.y,v.z)
+        grain.copy(color)
+        if (rootCollar) grain.lerp(basalBark,Math.exp(-distance*1.65)*(.86+.13*Math.cos(3*a)))
+        grain.multiplyScalar(.82 + .13*Math.cos(a-.4) + .05*Math.sin(3*a))
+        colors.push(grain.r,grain.g,grain.b)
+        uv.push(j / segments,distance/barkScale)
+        if (k && j) {
+          const d=base+k*(segments+1)+j, c=d-1, b=d-segments-1, a=b-1
+          indices.push(a,b,c,b,d,c)
+        }
       }
-    }
+    })
   }
+  function finish(group, material, name) {
+    const geo=new THREE.BufferGeometry()
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
+    geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
+    geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
+    geo.setIndex(indices)
+    geo.computeVertexNormals()
+    const obj=new THREE.Mesh(geo,material)
+    obj.name=name
+    group.add(obj)
+  }
+  return {tube,finish}
+}
 
-  function oak(x, z, scale, hero = false) {
-    const base = heightAt(x, z)
-    const origin = new THREE.Vector3(x, base, z)
-    const local = (dx, h, dz) => new THREE.Vector3(x + dx * scale, base + h * scale, z + dz * scale)
-    const wood = new THREE.Color(hero ? 0x78705c : 0x817e69)
-    const bend = random() * TAU, bx = Math.sin(bend), bz = Math.cos(bend)
-    const trunk = [local(0, -.12, 0), local(0, .46, 0), local(.09 * bx, 1.68, .09 * bz), local(.3 * bx, 3.1, .3 * bz), local(.42 * bx, 4.2, .42 * bz)]
-    bark.limb(trunk, [.74, .55, .47, .37, .23].map(r => r * scale), hero ? 16 : 10, wood, random)
-    const branches = hero ? 13 : 8
-    for (let i = 0; i < branches; i++) {
-      const a = i * 2.39996 + bend + random() * .47
-      const span = 1.7 + random() * 1.27
-      const h = 2.3 + (i / branches) * 2.15 + random() * .45
-      const high = 2.35 + random() * 1.6
-      const u = Math.cos(a), v = Math.sin(a)
-      const start = local(bx * .25, h, bz * .25)
-      const elbow = local(u * span * .54, h + high * .41, v * span * .54)
-      const fork = local(u * span, h + high * .8, v * span)
-      bark.limb([start, elbow, fork], [.225, .153, .077].map(r => r * scale), 8, wood, random)
-      if (hero && i <= 5) {
-        for (let l = 0; l < 2; l++) ribbon(elbow.clone().lerp(fork, .2 + .56 * random()), .42 + random() * .63)
+function birchStand(group,heightAt,shade) {
+  const random = seededRandom(1631)
+  const wood=woodBatch(), twigs=woodBatch(), leaves=[]
+  const paper=new THREE.Color('#f2efe2'), shoot=new THREE.Color('#776c55')
+  const stems=[[-38.9,25.1,9.7,.27,-.34,.64],[-37.1,23.5,10.8,.19,.78,-.36],[-36.9,22.3,8.4,.155,-.16,-.7]]
+  for(const [x,z,h,r,lean,tilt] of stems) {
+    const y=heightAt(x,z)-.1
+    const phase=random()*TAU
+    function stemAt(t) {
+      return new THREE.Vector3(x+lean*t+.19*Math.sin(t*5+phase)*t, y+h*t, z+tilt*t+.22*Math.sin(t*3.2+phase)*t)
+    }
+    const sections=[0,.04,.14,.34,.54,.70,.85,1]
+    wood.tube(sections.map(stemAt),sections.map(t=>r*(1-t*.98)*(1+.44*Math.exp(-t*20))),14,paper,1.25,true)
+    for (let k=0;k<5;k++) {
+      const a=phase+k*TAU/5+.23*Math.sin(k+phase)
+      const root = (distance, rise, turn) => {
+        const px=x+Math.cos(a+turn)*distance, pz=z+Math.sin(a+turn)*distance
+        return new THREE.Vector3(px,heightAt(px,pz)+rise,pz)
       }
-      const twigs = hero ? 5 : 3
-      for (let j = 0; j < twigs; j++) {
-        const dir = a + (j / twigs - .4) * 1.9 + random() * .5
-        const distance = (.85 + random() * 1.1) * scale
-        const tip = fork.clone().add(new THREE.Vector3(Math.cos(dir) * distance, (.2 + random() * 1.38) * scale, Math.sin(dir) * distance))
-        const mid = fork.clone().lerp(tip, .55)
-        mid.y += .1 * scale
-        bark.limb([fork, mid, tip], [.08, .053, .019].map(r => r * scale), 5, wood, random)
-        for (let k = 0; k < (hero ? 8 : 6); k++) {
-          const radius = (.1 + random() * .9) * scale
-          const t = random() * TAU
-          const pos = tip.clone().add(new THREE.Vector3(Math.cos(t) * radius, (random() - .46) * .9 * scale, Math.sin(t) * radius))
-          const size = (.93 + random() * .57) * scale
-          const yaw = random() * TAU
-          const light = THREE.MathUtils.clamp(.82 + (pos.y - origin.y) / (scale * 27) + random() * .18, .9, 1.3)
-          const color = new THREE.Color().setRGB(light * .94, light, light * (.79 + random() * .13))
-          sprays.push({ position: pos, rotation: [random() * 1.5 - .83, yaw, random() * 1.2 - .6], scale: [size * 1.36, size, size], color })
+      wood.tube([root(r*.45,.15,0),root(r*1.52,.045,.12),root(r*2.3,-.045,.26),root(r*3,-.11,.36)],
+        [r*.41,r*.26,r*.13,.004],7,new THREE.Color('#98927a'),1.4)
+    }
+    shade(x,z,2.2,1.55,.75)
+    const heights=Array.from({length:18},()=>.23+random()*.74).sort((a,b)=>a-b)
+    for (const t of heights) {
+      const a=random()*TAU
+      const span=(.35+2.7*Math.sin(t*Math.PI))*(.61+random()*.66)
+      const climb=.35+span*(.30+random()*.34)
+      const start=stemAt(t), bend=random()*.42-.21
+      const point=(reach,rise,offset=0)=>new THREE.Vector3(
+        start.x+Math.cos(a+offset)*reach, start.y+rise, start.z+Math.sin(a+offset)*reach)
+      const fork=point(span*.46,climb*.73,bend)
+      const elbow=point(span*.79,climb,bend*.39)
+      const end=point(span,climb*(.81+random()*.19))
+      const radius=r*(1-t*.6)*(.18+random()*.22)
+      wood.tube([start,fork,elbow],[radius,radius*.61,radius*.26],7,paper,.95)
+      twigs.tube([elbow,end],[radius*.3,.009],5,shoot)
+      for(let j=0;j<4;j++){
+        const origin=fork.clone().lerp(end,.16+j*.19)
+        const sign=j%2?1:-1, heading=a+sign*(.42+random()*.61), length=.40+random()*.70
+        const middle=origin.clone().add(new THREE.Vector3(Math.cos(heading)*length*.63,.03+random()*.13,Math.sin(heading)*length*.63))
+        const tip=origin.clone().add(new THREE.Vector3(Math.cos(heading)*length,-.10-random()*.50,Math.sin(heading)*length))
+        twigs.tube([origin,middle,tip],[.018,.011,.002],4,shoot)
+        for(let n=0;n<3;n++){
+          const spread=.67+random()*.53, sx=(n-1)*.14
+          const anchor=middle.clone().lerp(tip,.24+random()*.68)
+          anchor.x+=sx*Math.cos(heading+.8)
+          anchor.y-=.13
+          leaves.push({position:anchor, rotation:[random()*.96-.43,heading+(n-1)*.8,sign*(.34+random()*.57)],
+            size:[spread*(.77+random()*.18),spread],color:new THREE.Color().setRGB(.87+random()*.19,.88+random()*.17,.78+random()*.17)})
         }
       }
     }
-    if (hero) {
-      for (let i = 0; i < 10; i++) {
-        const a = i * TAU / 10 + random() * .35
-        const length = (1.3 + random()) * scale
-        const ex = x + Math.cos(a) * length, ez = z + Math.sin(a) * length
-        const tip = new THREE.Vector3(ex, heightAt(ex, ez) + .02, ez)
-        const middle = trunk[1].clone().lerp(tip, .55)
-        middle.y = heightAt(middle.x, middle.z) + .13 * scale
-        bark.limb([trunk[1], middle, tip], [.27 * scale, .16 * scale, .018], 7, wood, random)
+    shade(x+.34,z-.4,4.0,2.7,.24)
+  }
+  const barkMap=paperBark(random)
+  wood.finish(group,new THREE.MeshStandardMaterial({map:barkMap,bumpMap:barkMap,bumpScale:.015,vertexColors:true,roughness:.98}),'入口 · 桦树主干')
+  twigs.finish(group,new THREE.MeshLambertMaterial({vertexColors:true}),'桦树细梢')
+  plantBatch(group,sprayMaterial(plantMap('birch-spray')),leaves,'leaves','桦树叶幕')
+}
+
+function leaflessCrown() {
+  const random = seededRandom(5952)
+  return paintedTexture(256, ctx=>{
+    ctx.lineCap='round'
+    function fork(x,y,angle,length,width,level){
+      const bent=angle+(random()-.52)*.42
+      const mx=x+Math.cos(angle)*length*.52, my=y+Math.sin(angle)*length*.52
+      const nx=mx+Math.cos(bent)*length*.5, ny=my+Math.sin(bent)*length*.5
+      ctx.strokeStyle=level>3?'#695e48':'#797360'
+      ctx.lineWidth=width
+      ctx.beginPath();ctx.moveTo(x,y);ctx.quadraticCurveTo(mx,my,nx,ny);ctx.stroke()
+      if (level===0) return
+      fork(nx,ny,bent+(.17+random()*.48),length*(.61+random()*.16),width*.66,level-1)
+      fork(nx,ny,bent-(.17+random()*.55),length*(.62+random()*.19),width*.64,level-1)
+    }
+    fork(130,254,-1.56,54,7,6)
+    fork(130,213,-2.25,42,4.5,5)
+    fork(131,202,-.85,45,4.2,5)
+  })
+}
+
+function woodland(group,heightAt,riverX,shade) {
+  const random=seededRandom(2094)
+  const pines=[],crowns=[],branches=[],trees=[]
+  function place(x,z,h,conifer,shadow=true) {
+    if(Math.abs(x-riverX(z))<6.8) return
+    if(trees.some(tree=>Math.hypot(tree.x-x,tree.z-z)<(tree.h+h)*.115)) return
+    trees.push({x,z,h})
+    const y=heightAt(x,z)-.08
+    const yaw=random()*Math.PI
+    const spread=(conifer?.55:.9)*h*(.79+.49*random())
+    const light=.76+random()*.47
+    const tint=new THREE.Color().setRGB(light*(.91+random()*.12),light,light*(.83+random()*.16))
+    const target=conifer?pines:crowns
+    const px=random()>.5?1:-1
+    for(const a of [yaw,yaw+Math.PI*.50]){
+      target.push({position:new THREE.Vector3(x,y,z), rotation:[0,a,0],size:[spread*px,h],color:tint})
+      if(!conifer) branches.push({position:new THREE.Vector3(x,y,z),rotation:[0,a,0],size:[spread*.98,h*.96],color:tint})
+    }
+    if(shadow) shade(x+.19*h,z+h*.08,h*(conifer?.48:.64),h*.42,.67)
+  }
+
+  // Rocky higher shoulders sustain conifers. The more open, rounded groves trace
+  // the moisture-rich lower slopes, with gaps where the bridge and river are seen.
+  const groups=[
+    [-61,-27,20,13,18,8,.47],[-46,-43,38,14,10,8.5,.58],[-27,-65,42,21,13,7.6,.60],
+    [7,-69,35,20,11,6.4,.57],[35,-58,48,17,11,8.4,.71],[59,-34,28,10,18,7.7,.58],
+    [72,-8,32,12,17,9.3,.79],[60,30,31,12,17,8.3,.60],[40,55,29,16,10,7,.41],
+    [10,61,25,17,10,8,.52],[-45,60,29,19,10,9.1,.58],[-67,31,28,9,16,8.2,.38],
+    [-43,-14,10,7,4.2,5,.08],[-30,-28,11,6.5,5,4.7,.14],[41,10,11,7,4,5.6,.05],
+    [47,-29,12,8,4.9,5,.08],
+  ]
+  for(const [cx,cz,count,rx,rz,base,pineShare] of groups){
+    const bend=random()*TAU
+    for(let i=0;i<count;i++){
+      const a=random()*TAU, rr=Math.sqrt(random()), d=rr*(.8+.24*Math.sin(a*3+bend))
+      const x=cx+Math.cos(a)*rx*d, z=cz+Math.sin(a)*rz*d
+      const h=base*(.4+random()*.57+(1-rr)*.34)
+      place(x,z,h, random()<pineShare,Math.hypot(x,z)<50)
+    }
+  }
+  // A few open-grown alders mark the turns in the river, below the distant woods.
+  for(const [x,z,h] of [[-21,-21,5.2],[-21.9,-23.5,3.1],[9.4,34,4.9],[11.4,35.8,3.4],[-45,7.5,6],[-46,9.2,3.5],[38,-23,5.2],[-27,44.5,4.8]]) place(x,z,h,false)
+  for(const [name,entries] of [['conifer',pines],['oak',crowns]]){
+    plantBatch(group,new THREE.MeshBasicMaterial({map:plantMap(name),alphaTest:.28,side:THREE.DoubleSide}),entries,name,'谷地林缘 · '+name,true)
+  }
+  plantBatch(group,new THREE.MeshLambertMaterial({map:leaflessCrown(),alphaTest:.29,side:THREE.DoubleSide}),branches,null,'谷地林缘 · 落叶乔木冬枝',true)
+}
+
+function meadowIslands(group,heightAt,riverX,pathDistance) {
+  const random=seededRandom(70931), oat=[],yarrow=[]
+  // Narrow swaths on the uphill margins leave a clear mineral verge along the path.
+  // The two memorial sites, courtyard floor and bridge are kept clear at every season.
+  const drifts=[
+    [-42.3,26.6,2.4,1.25],[-36.4,29.4,1.65,.58],[-36,20.2,2.2,.78],[-32.1,20.6,1.15,.79],
+    [-35.5,30.9,2.7,1.33],[-28,25.6,2.55,.72],[-25,22.2,1.65,.82],[-23.2,16.8,1.54,1.1],
+    [-17,11.9,2.05,.68],[-11.7,3.4,1.65,.88],[-12.8,9.4,1.55,.70],[-8.3,12.2,1.8,.81],
+    [-10.8,-1.6,1.2,.86],[-8.1,-4,2.1,1.35],[8.9,-7.8,1.5,.76],[12.1,-9.8,1.38,.70],
+    [13.3,-16.1,1.7,.81],[16.2,-18.6,2.45,1.03],[20,-12.8,1.92,.86],[22.8,-6.8,1.4,.58],
+    [23.6,-3.3,1.45,.91],[34.7,-12.3,2.35,.94],
+  ]
+  for(const [cx,cz,rx,rz] of drifts){
+    const angle=random()*TAU, lean=random()*.14-.07
+    const seeds=7+Math.floor(random()*14)
+    for(let j=0;j<seeds;j++){
+      const a=random()*TAU,r=Math.sqrt(random()), dx=Math.cos(a)*r*rx, dz=Math.sin(a)*r*rz
+      const x=cx+dx*Math.cos(angle)-dz*Math.sin(angle),z=cz+dx*Math.sin(angle)+dz*Math.cos(angle)
+      if(pathDistance(x,z)<1.62 || Math.abs(x-riverX(z))<6.2 || Math.hypot(x+12,z-6)<1.52 || Math.hypot(x+34.5,z-23.5)<1.44) continue
+      const flower=j<3 && random()<.76
+      const h=(flower?.33:.29)+random()*(flower?.25:.44)+(1-r)*.13
+      const w=h*(.63+random()*.42)
+      const bright=.68+random()*.44
+      const color=new THREE.Color().setRGB(bright*(.95+random()*.12),bright,bright*(.8+random()*.18))
+      const heading=random()*TAU, y=heightAt(x,z)-.035
+      for(let n=0;n<2;n++) {
+        (flower?yarrow:oat).push({position:new THREE.Vector3(x,y,z),
+          rotation:[lean,heading+n*1.5,random()*.16-.08],size:[w,h],color})
       }
-      shade(x, z, scale * 9.8)
     }
   }
+  // Seasonal density and wind act on the flat sprays, while the photograph keeps
+  // individual stalks and seed heads readable within a single draw for each species.
+  plantBatch(group,sprayMaterial(plantMap('meadow-oat'),.15),oat,'leaves','坡缘 · 野燕麦',true)
+  plantBatch(group,sprayMaterial(plantMap('meadow-yarrow'),.17),yarrow,'flowers','坡缘 · 蓍草',true)
+}
 
-  oak(20, -16, 1.47, true)
-  for (const [x, z, scale] of [[-30,38,.88], [-44,8,.86], [-36,-19,.75], [-32,-25,.81], [30,4,.79], [43,-34,.95], [38,-38,.81], [20,37,.84], [-21,-47,.88]]) {
-    if (Math.abs(x - riverX(z)) > 5.4) {
-      oak(x, z, scale)
-      const h=scale*9, position=new THREE.Vector3(x,heightAt(x,z)+h*.49,z)
-      const yaw=random()*Math.PI
-      for (let j=0;j<2;j++) matureOaks.push({position,rotation:[0,yaw+j*Math.PI/2,0],scale:[h*1.07,h,1]})
+function shadeBatch(group,heightAt) {
+  const pos=[],uv=[],indices=[]
+  function patch(x,z,rx,rz,intensity){
+    const seg=6, start=pos.length/3
+    for(let j=0;j<=seg;j++) for(let i=0;i<=seg;i++){
+      const u=i/seg,v=j/seg,px=x+(u-.5)*rx*2,pz=z+(v-.5)*rz*2
+      pos.push(px,heightAt(px,pz)+.021,pz)
+      // The outer half of the same atlas is a lighter contact halo for the small plants.
+      uv.push((u+(intensity<.4?1:0))*.5,1-v)
+      if(i&&j){const end=start+j*(seg+1)+i;indices.push(end-seg-2,end-1,end-seg-1,end-1,end,end-seg-1)}
     }
   }
-  addBirches(group, heightAt, bark)
-  bark.finish(group)
-  instanceMesh(group, new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({
-    map: leafSpray(), side: THREE.DoubleSide, alphaTest: .32, roughness: 1, emissive: 0x151b0e
-  }), sprays, 'leaves')
+  function finish(){
+    const tex=paintedTexture(256,ctx=>{
+      const random=seededRandom(9905)
+      for(let tile=0;tile<2;tile++){
+        const x=64+tile*128,y=128
+        ctx.save();ctx.translate(x,y);ctx.scale(1,2)
+        const shadow=ctx.createRadialGradient(0,0,0,0,0,61)
+        shadow.addColorStop(0,tile?'rgba(30,33,24,.16)':'rgba(30,33,24,.33)')
+        shadow.addColorStop(.48,tile?'rgba(30,33,24,.09)':'rgba(30,33,24,.17)')
+        shadow.addColorStop(1,'rgba(30,33,24,0)')
+        ctx.fillStyle=shadow;ctx.fillRect(-64,-64,128,128)
+        for(let j=0;j<65;j++){
+          const a=random()*TAU,r=Math.sqrt(random())*42,px=Math.cos(a)*r,pz=Math.sin(a)*r
+          const wave=ctx.createRadialGradient(px,pz,0,px,pz,8+random()*11)
+          wave.addColorStop(0,tile?'rgba(28,33,24,.07)':'rgba(28,33,24,.10)');wave.addColorStop(1,'rgba(28,33,24,0)')
+          ctx.fillStyle=wave;ctx.fillRect(px-22,pz-22,44,44)
+        }
+        ctx.restore()
+      }
+    })
+    const geo=new THREE.BufferGeometry()
+    geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));geo.setIndex(indices)
+    const shade=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map:tex,transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-1}))
+    shade.name='树荫 · 地表接触与斑影'
+    group.add(shade)
+  }
+  return {patch,finish}
+}
 
-  if (ribbonVertices.length) {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(ribbonVertices, 3))
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(ribbonColors, 3))
-    geo.setIndex(ribbonIndices)
-    geo.computeVertexNormals()
-    const cloth = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ side: THREE.DoubleSide, vertexColors: true, roughness: .96 }))
-    cloth.userData.habitat='ribbons'
-    group.add(cloth)
-  }
-
-  // Dark groups on the margins frame the composition; the entire central walking corridor stays clear.
-  for (const [cx, cz, count] of [[-55,-22,33],[-29,-55,40],[25,-55,34],[57,-24,40],[62,26,29],[-64,36,29],[15,53,24]]) {
-    for (let i = 0; i < count; i++) {
-      const a = random() * TAU, r = Math.sqrt(random()) * 12
-      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r
-      if (Math.abs(x - riverX(z)) < 6) continue
-      const h = 5 + random() * 6
-      const position = new THREE.Vector3(x, heightAt(x, z) + h * .47, z)
-      const yaw = random() * Math.PI
-      const l = .85 + random() * .28
-      const color = new THREE.Color().setRGB(l, l, l * .93)
-      for (let j = 0; j < 2; j++) pines.push({ position, rotation: [0, yaw + j * Math.PI / 2, 0], scale: [h * .59, h, 1], color })
-    }
-  }
-  for(const [name,entries] of [['conifer',pines],['oak',matureOaks]]){
-    const map=surfaceTexture(name)
-    map.wrapS=map.wrapT=THREE.ClampToEdgeWrapping
-    instanceMesh(group,new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({
-      map,side:THREE.DoubleSide,alphaTest:.25
-    }),entries,name)
-  }
+export function addForest(group,heightAt,riverX,pathDistance = () => Infinity) {
+  const groundShade=shadeBatch(group,heightAt)
+  birchStand(group,heightAt,groundShade.patch)
+  woodland(group,heightAt,riverX,groundShade.patch)
+  groundShade.finish()
+  meadowIslands(group,heightAt,riverX,pathDistance)
+  addWishingOak(group,heightAt)
 }

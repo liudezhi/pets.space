@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { surfaceTexture } from './world-materials.js';
 
 // Each stone sits off the trail. Its viewing point lies on the open meadow beside it.
 // The same six pairs are reused in each server-assigned neighborhood.
@@ -62,7 +63,8 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
   scene.add(group);
   const stone = stoneShape();
   const portrait = new THREE.PlaneGeometry(0.54, 0.58);
-  const stoneMaterial = new THREE.MeshStandardMaterial({ color: '#b3aa92', roughness: 0.97 });
+  const grain = surfaceTexture('limestone');
+  const stoneMaterial = new THREE.MeshStandardMaterial({ map: grain, bumpMap: grain, bumpScale: .023, color: '#ede8da', roughness: .94 });
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const listeners = new AbortController();
@@ -126,7 +128,9 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
     const photoMaterial = new THREE.MeshBasicMaterial({ map: texture, color: '#fdf7e9' });
     const frame = new THREE.Mesh(portrait, photoMaterial);
     frame.position.set(0, 0.60, 0.298);
-    object.add(new THREE.Mesh(stone, stoneMaterial), frame);
+    const marker = new THREE.Mesh(stone, stoneMaterial);
+    marker.receiveShadow = true;
+    object.add(marker, frame);
     group.add(object);
     markers.set(garden.id, { garden, object, photoMaterial, site });
   }
@@ -253,7 +257,7 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
       disposed = true; clearTimeout(timer); request?.abort(); listeners.abort();
       for (const id of markers.keys()) remove(id);
       group.removeFromParent();
-      stone.dispose(); stoneMaterial.dispose(); portrait.dispose();
+      stone.dispose(); stoneMaterial.dispose(); grain.dispose(); portrait.dispose();
       controls.remove(); visit.remove();
     },
   };

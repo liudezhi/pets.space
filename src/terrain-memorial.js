@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { surfaceTexture } from './world-materials.js';
 
 export const memorialPlots = {
-  stone: { x: -12, z: 6, viewX: -10.4, viewZ: 8.15, lookX: -11.45, lookZ: 5.60 },
+  stone: { x: -12, z: 6, viewX: -12.66, viewZ: 8.36, lookX: -10.83, lookZ: 5.52 },
   entrance: { x: -34.5, z: 23.5, viewX: -36.3, viewZ: 25.9 },
 };
 
@@ -23,34 +23,113 @@ function canvasTexture(width, height, paint) {
   return texture;
 }
 
+const frameSite = { x: .15, y: .88, width: .47, height: .59 };
+const smoothstep = THREE.MathUtils.smoothstep;
+
 function limestone() {
-  const map = surfaceTexture('limestone');
-  return new THREE.MeshStandardMaterial({map, bumpMap: map, bumpScale: .027, vertexColors:true, roughness:.96});
+  const map = surfaceTexture('memorial-limestone');
+  const material = new THREE.MeshStandardMaterial({
+    map, bumpMap: map, bumpScale: .21, vertexColors: true, roughness: .96,
+  });
+  material.onBeforeCompile = shader => {
+    const varyings = 'varying vec3 stonePosition; varying vec3 stoneNormal;\n';
+    shader.vertexShader = varyings + shader.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nstonePosition = position; stoneNormal = normal;');
+    // Soluble limestone has no single grain direction. Blend the three projections
+    // in local space so the texture can cross a fractured shoulder without stretching.
+    shader.fragmentShader = varyings + shader.fragmentShader.replace('#include <map_fragment>', `
+      vec3 weights = pow(abs(normalize(stoneNormal)), vec3(3.5));
+      weights /= max(dot(weights, vec3(1.0)), 0.00001);
+      vec3 p = stonePosition * .61 + vec3(.49,.10,.25);
+      vec3 mineral = texture2D(map, p.zy).rgb * weights.x
+                  + texture2D(map, p.xz).rgb * weights.y
+                  + texture2D(map, p.xy).rgb * weights.z;
+      // Keep the inscription on a small dressed area where the mason removed
+      // the deeper surface pits. Light still falls across it with the seasons.
+      vec2 panel = abs(stonePosition.xy - vec2(.15,.365)) - vec2(.34,.066);
+      float dressed = (1.0 - smoothstep(-.012,.055,max(panel.x,panel.y))) * smoothstep(.28,.36,stonePosition.z);
+      mineral = mix(mineral, vec3(.59,.55,.49), .65*dressed);
+      float mineralHeight = dot(mineral, vec3(.24,.56,.20));
+      diffuseColor.rgb *= mineral;
+    `).replace('#include <normal_fragment_maps>', `
+      normal = perturbNormalArb(-vViewPosition, normal,
+        bumpScale*vec2(dFdx(mineralHeight),dFdy(mineralHeight)), faceDirection);
+    `);
+  };
+  material.customProgramCacheKey = () => 'memorial-limestone-projections';
+  return material;
 }
 
-function stoneGeometry() {
-  // Weathered ridge, slightly asymmetric shoulders and a shallow cut for the ceramic frame.
-  const geometry = new THREE.SphereGeometry(1,40,24);
-  const position = geometry.attributes.position, uv = geometry.attributes.uv;
-  const colors = [], tint = new THREE.Color(), moss = new THREE.Color('#68754d');
-  for (let i=0; i<position.count; i++) {
-    const nx=position.getX(i), ny=position.getY(i), nz=position.getZ(i);
-    const pits = .055*Math.sin(7*nx+1.7*ny)*Math.cos(5*ny-2*nz) + .024*Math.sin(13*nz+10*ny);
-    const x = nx*(1.17+pits) - ny*.11;
-    const y = .47 + ny*(.95+pits*.9) - nx*.10 + .033*Math.sin(6*nz+nx);
-    const naturalFront = nz*(.73+pits) - .11;
-    const face = .34 + .042*Math.cos(7*x+3*y) + .017*Math.sin(15*y-5*x);
-    const z = Math.min(naturalFront, face);
-    position.setXYZ(i,x,y,z);
-    const cover = THREE.MathUtils.clamp(.21 - y*.23 + Math.sin(x*8+y*4)*.07,0,.23);
-    tint.set('#fff8e4').lerp(moss,cover);
-    colors.push(tint.r,tint.g,tint.b);
-    // Unwrap around the boulder rather than stretching a texture onto its rounded sides.
-    uv.setXY(i,uv.getX(i)*3.2,uv.getY(i)*1.28);
+function stoneGeometry(detail = 1) {
+  // Keep a grid on every face. An equatorial sphere projection would pinch the
+  // photographed strata across the shoulder and across the face of the stone.
+  const geometry = new THREE.BoxGeometry(2, 2, 2, Math.ceil(34*detail), Math.ceil(29*detail), Math.ceil(18*detail));
+  const position = geometry.attributes.position;
+  const colors = [], tint = new THREE.Color(), chalk = new THREE.Color('#fffefa');
+  const stain = new THREE.Color('#8b9071');
+  for (let i = 0; i < position.count; i++) {
+    const bx = position.getX(i), by = position.getY(i), bz = position.getZ(i);
+    const shell = Math.pow(bx*bx + by*by + bz*bz, -.44);
+    const nx = bx * shell, ny = by * shell, nz = bz * shell;
+    const fracture = .054*Math.sin(6*nx + 4*ny)*Math.cos(5*nz - ny)
+      + .026*Math.sin(11*ny - 8*nx + nz) + .016*Math.sin(19*nz + 13*nx);
+    const x = nx * (1.18 + fracture) - .14*ny;
+    const y = .56 + ny*(1 + fracture) - .20*nx + .04*Math.sin(5*nz + 4*nx);
+    let z = -.12 + nz * (.88 + fracture);
+    if (nz > 0) {
+      // Three cleavage planes, two eroded pockets and a continuous uncut shoulder.
+      const face = .48 + .065*Math.sin(5*x + 2*y) + fracture
+        - Math.max(0, x - .34)*.30 - Math.max(0, -x - .57)*.47;
+      const pocket = (cx, cy, rx, ry) => Math.max(0, 1 - ((x-cx)/rx)**2 - ((y-cy)/ry)**2);
+      z = Math.min(z, face - .089*pocket(-.59,.70,.14,.19) - .067*pocket(.71,.85,.13,.12));
+      // A mason dressed only the limestone under the frame and its lettering.
+      const frameEdge = Math.max(Math.abs(x-frameSite.x)-.281, Math.abs(y-frameSite.y)-.341);
+      const textEdge = Math.max(Math.abs(x-frameSite.x)-.44, Math.abs(y-.365)-.096);
+      const frameCut = .348 + .19*smoothstep(frameEdge, -.016, .06);
+      const textCut = .405 + .16*smoothstep(textEdge, -.012, .08);
+      z = Math.min(z, frameCut, textCut);
+    }
+    position.setXYZ(i, x, y, z);
+    const damp = (1 - smoothstep(y, -.04, .43)) * (.22+.11*Math.sin(11*x + z));
+    tint.copy(chalk).lerp(stain, damp);
+    colors.push(tint.r, tint.g, tint.b);
   }
-  geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
+  // BoxGeometry has independent edge vertices on adjoining sides. Smooth only
+  // those coincident positions to avoid a visible cube seam across the shoulders.
+  const normals = geometry.attributes.normal, joined = new Map(), keys = [];
+  for (let i=0;i<position.count;i++) {
+    const key = [position.getX(i),position.getY(i),position.getZ(i)].map(v=>Math.round(v*10000)).join(',');
+    const total = joined.get(key) || new THREE.Vector3();
+    total.x += normals.getX(i); total.y += normals.getY(i); total.z += normals.getZ(i);
+    joined.set(key,total); keys.push(key);
+  }
+  for (const total of joined.values()) total.normalize();
+  keys.forEach((key,i) => {
+    const n = joined.get(key);
+    normals.setXYZ(i,n.x,n.y,n.z);
+  });
   return geometry;
+}
+
+function roundedRim(width, height, band, depth, bevel, material) {
+  function trace(path, w, h, radius) {
+    const x = w/2, y = h/2, r = radius;
+    path.moveTo(-x+r, -y);
+    path.lineTo(x-r,-y); path.quadraticCurveTo(x,-y,x,-y+r);
+    path.lineTo(x,y-r); path.quadraticCurveTo(x,y,x-r,y);
+    path.lineTo(-x+r,y); path.quadraticCurveTo(-x,y,-x,y-r);
+    path.lineTo(-x,-y+r); path.quadraticCurveTo(-x,-y,-x+r,-y);
+  }
+  const shape = new THREE.Shape(), opening = new THREE.Path();
+  trace(shape, width, height, .018);
+  trace(opening, width-2*band, height-2*band, .01);
+  shape.holes.push(opening);
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth, bevelEnabled: true, bevelSegments: 2, bevelSize: bevel, bevelThickness: bevel, curveSegments: 3,
+  });
+  return new THREE.Mesh(geometry, material);
 }
 
 function addContactShadow(marker, heightAt, x, z) {
@@ -73,7 +152,7 @@ function addContactShadow(marker, heightAt, x, z) {
   marker.add(shade);
 }
 
-function addDaisies(marker) {
+function addDaisies(marker, groundY) {
   const random = randomSource(9181);
   const positions = [];
   const colors = [];
@@ -83,32 +162,51 @@ function addDaisies(marker) {
     color.setHex(hex);
     for (let i = 0; i < 3; i++) colors.push(color.r, color.g, color.b);
   }
-  // A single vertex-colored batch holds the thin stems, leaves and individual petals.
-  for (let i = 0; i < 27; i++) {
-    const clump = i < 18 ? 1 : -1;
-    const x = clump * (.53 + random() * .46), z = .16 + random() * .35;
-    const h = .15 + random() * .26;
-    const bend = (random() - .5) * .1;
-    const flowerX = x + bend;
-    const flowerSize = .025 + random() * .021;
-    triangle([x, .015, z], [x + .007, .015, z], [flowerX + .004, h, z], 0x667843);
-    triangle([x, .015, z], [flowerX + .004, h, z], [flowerX - .002, h, z], 0x667843);
-    for (const side of [-1, 1]) {
-      triangle([x, h * .3, z], [x + side * .052, h * .6, z + .012], [x + side * .008, h * .54, z], 0x738147);
+  // Build leaves, bent stems and two flowering clumps in one draw call.
+  const clumps = [[-.65,.59], [.94,.28], [-.99,.29], [.65,.49]];
+  for (let i = 0; i < 29; i++) {
+    const [cx,cz] = clumps[i % clumps.length];
+    const x = cx + (random()-.5)*.23, z = cz + (random()-.5)*.21;
+    const foot = groundY(x,z)-.008, stem = .18 + random()*.30;
+    const flowerX = x+(random()-.5)*.16, h = foot+stem, size = .030+random()*.022;
+    triangle([x-.004,foot,z], [x+.006,foot,z], [flowerX+.003,h,z+.014], 0x617544);
+    triangle([x-.004,foot,z], [flowerX+.003,h,z+.014], [flowerX-.004,h,z+.014], 0x617544);
+    for (let j=0;j<4;j++) {
+      const angle = random()*Math.PI*2, dx = Math.cos(angle), dz = Math.sin(angle);
+      const baseY = foot + (j%2)*.09;
+      const base = [x,baseY,z], tip = [x+dx*.118,baseY+.15,z+dz*.118];
+      const fold = [x+dx*.057,baseY+.115,z+dz*.057];
+      triangle(base, [fold[0]-dz*.016,fold[1]-.02,fold[2]+dx*.016], tip, 0x6a7c4b);
+      triangle(base, tip, [fold[0]+dz*.018,fold[1]-.026,fold[2]-dx*.018], 0x859564);
     }
-    const petals = 9, phase = random() * 6.28;
-    for (let j = 0; j < petals; j++) {
-      const angle = j / petals * 2 * Math.PI + phase;
+    const petals = 10, phase = random()*Math.PI*2;
+    for (let j=0;j<petals;j++) {
+      const angle = j/petals * 2*Math.PI + phase;
       const axis = Math.cos(angle), cross = Math.sin(angle);
-      const pt = (r, w, rise) => [flowerX + r * axis - w * cross, h + rise + r * cross * .3, z + r * cross + w * axis];
-      const base = pt(.003, 0, 0), tip = pt(flowerSize, 0, .008);
-      const left = pt(flowerSize * .72, .0068, .006), right = pt(flowerSize * .72, -.0068, .006);
-      const white = j % 3 === 0 ? 0xe4e2c6 : 0xfff9dd;
-      triangle(base, left, tip, white);
-      triangle(base, tip, right, white);
-      const next = angle + 2 * Math.PI / petals;
-      triangle([flowerX, h + .01, z], pt(.009, 0, .005),
-        [flowerX + Math.cos(next) * .009, h + .005 + Math.sin(next) * .0027, z + Math.sin(next) * .009], 0xe4ad45);
+      function pt(radius,width,lift) {
+        const dx = radius*axis - width*cross, dz = radius*cross + width*axis;
+        return [flowerX+dx, h+lift-.62*dz, z+.014+.78*dz];
+      }
+      const base=pt(.005,0,0), tip=pt(size,0,.004);
+      const left=pt(size*.70,.008,.009), right=pt(size*.70,-.008,.009);
+      const white=j%3===0?0xe4e3ce:0xfff9e7;
+      triangle(base,left,tip,white); triangle(base,tip,right,white);
+      const next = angle+2*Math.PI/petals;
+      triangle([flowerX,h+.006,z+.019],pt(.010,0,.001),
+        [flowerX+.010*Math.cos(next),h+.001-.0062*Math.sin(next),z+.014+.0078*Math.sin(next)],0xe7ad37);
+    }
+  }
+  // The dried seed heads stay below the frame, interspersed with the oxeye daisies.
+  for(let i=0;i<24;i++) {
+    const [cx,cz]=clumps[i%4], x=cx+(random()-.5)*.33, z=cz+.08+(random()-.5)*.18;
+    const foot=groundY(x,z), height=.22+random()*.29, lean=(random()-.5)*.2;
+    const top=[x+lean,foot+height,z+.03];
+    triangle([x-.002,foot,z], [x+.003,foot,z], top, 0x978a55);
+    for(let j=0;j<5;j++) {
+      const side=j%2===0?1:-1, f=.66+j*.072;
+      const base=[x+lean*f,foot+height*f,z+.03*f];
+      triangle(base,[base[0]+side*.011,base[1]+.031,base[2]+.006],
+        [base[0]+side*.027,base[1]+.053,base[2]+.011],0xb39e64);
     }
   }
   const geometry = new THREE.BufferGeometry();
@@ -274,62 +372,79 @@ function makeMarker(group, heightAt, place, memorial, stone, surface, signal, ra
   marker.add(monument);
 
   addContactShadow(marker,heightAt,x,z);
-  const w = .66, h = .76, portraitY = .82;
-  const frameGeometry = new THREE.BoxGeometry(w+.084,h+.084,.09);
-  const frame = new THREE.Mesh(frameGeometry, new THREE.MeshStandardMaterial({
-    color: 0xd5bf96, metalness: .08, roughness: .48,
-  }));
-  frame.position.set(0, portraitY, .397);
+  const { x: frameX, y: portraitY, width: w, height: h } = frameSite;
+  // The photograph sits behind the lip. The shaded reveal stays visible especially
+  // from an oblique angle, where a flat rectangle would appear pasted to the rock.
+  const surround = roundedRim(w+.113,h+.113,.044,.039,.007,
+    new THREE.MeshStandardMaterial({color:0x786c58,roughness:.89}));
+  surround.position.set(frameX, portraitY, .35);
+  marker.add(surround);
+  const frame = roundedRim(w+.077,h+.077,.041,.034,.008,
+    new THREE.MeshStandardMaterial({color:0xe3d4b6,roughness:.55}));
+  frame.position.set(frameX, portraitY, .38);
   marker.add(frame);
-  const photo = canvasTexture(528, 608, (ctx) => {
+  const photo = canvasTexture(480, 600, (ctx) => {
     ctx.fillStyle = '#e9e4d8';
-    ctx.fillRect(0, 0, 528, 608);
+    ctx.fillRect(0, 0, 480, 600);
     ctx.fillStyle = '#887e68';
     ctx.font = '45px serif';
     ctx.textAlign = 'center';
-    ctx.fillText('留 念', 264, 319);
+    ctx.fillText('留 念', 240, 316);
   });
   loadPortrait(photo, memorial ? memorial.photoUrl : '/pet.webp', !!memorial, signal);
   const portrait = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-    new THREE.MeshBasicMaterial({ map: photo, toneMapped: false }));
-  portrait.position.set(0, portraitY, .444);
+    new THREE.MeshStandardMaterial({ map: photo, roughness: .86, emissiveMap: photo, emissive: 0xffffff, emissiveIntensity: .13 }));
+  portrait.position.set(frameX, portraitY, .395);
   marker.add(portrait);
 
   const dedication = memorial?.name || '永远想念你';
   const inscription = canvasTexture(768, 192, (ctx) => {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = '600 104px "Noto Serif CJK SC","Songti SC",serif';
-    ctx.fillStyle = '#f2ead7';
-    ctx.fillText(dedication, 385, 89, 730);
-    ctx.fillStyle = '#342d27';
-    ctx.fillText(dedication, 384, 86, 730);
+    const characters = Array.from(dedication);
+    const split = Math.ceil(characters.length/2);
+    const lines = characters.length <= 9 ? [dedication]
+      : [characters.slice(0,split).join(''),characters.slice(split).join('')];
+    ctx.font = '600 ' + (lines.length === 1 ? 100 : 76) + 'px "Noto Serif CJK SC","Songti SC",serif';
+    lines.forEach((line,i) => {
+      const lineY = lines.length === 1 ? 91 : 52+i*82;
+      ctx.fillStyle = '#f3eddd';
+      ctx.fillText(line, 386, lineY+4, 730);
+      ctx.fillStyle = '#38362e';
+      ctx.fillText(line, 384, lineY, 730);
+    });
   });
-  const lettering = new THREE.Mesh(new THREE.PlaneGeometry(1.18, .295),
+  const lettering = new THREE.Mesh(new THREE.PlaneGeometry(.86, .204),
     new THREE.MeshBasicMaterial({ map: inscription, transparent: true, depthWrite: false }));
-  lettering.position.set(0, .256, .402);
+  lettering.position.set(frameX, .365, .414);
   marker.add(lettering);
-  addDaisies(marker);
+  const yaw = marker.rotation.y, c = Math.cos(yaw), sn = Math.sin(yaw);
+  const groundY = (px,pz) => heightAt(x+c*px+sn*pz, z-sn*px+c*pz) - marker.position.y;
+  addDaisies(marker, groundY);
   addGiftBouquet(marker, memorial?.flowerCount);
   addPaidGifts(marker,memorial?.gifts);
 
-  const pebbleGeometry = new THREE.IcosahedronGeometry(1, 1);
-  const pebbles = new THREE.InstancedMesh(pebbleGeometry,
-    new THREE.MeshStandardMaterial({ roughness: .97 }), 42);
-  const dummy = new THREE.Object3D(), tint = new THREE.Color();
+  // A handful of detached, half-buried strata and the smaller chips around them.
+  // The path and the area where a visitor lays flowers both stay clear.
+  const slabs = [[-.93,.47,.34],[-1.19,.13,.20],[-.78,.88,.20],
+    [.86,.49,.32],[1.11,.27,.23],[.57,.72,.15],[-1.10,-.26,.25]];
+  const pebbleGeometry = new THREE.DodecahedronGeometry(1);
+  const pebbleSurface = new THREE.MeshStandardMaterial({map: surface.map, roughness:.98});
+  const pebbles = new THREE.InstancedMesh(pebbleGeometry, pebbleSurface, 29);
+  const dummy = new THREE.Object3D(), tint = new THREE.Color(), aged = new THREE.Color(0x9d9e8f);
   for (let i = 0; i < pebbles.count; i++) {
-    const theta = random() * 2 * Math.PI, r = .83 + random() * .55;
-    const px = Math.cos(theta) * r, pz = Math.sin(theta) * r * .61;
-    const worldX = x + Math.cos(marker.rotation.y) * px + Math.sin(marker.rotation.y) * pz;
-    const worldZ = z - Math.sin(marker.rotation.y) * px + Math.cos(marker.rotation.y) * pz;
-    const radius = .035 + random() * .14;
-    dummy.position.set(px, heightAt(worldX, worldZ) - marker.position.y + .014, pz);
-    dummy.scale.set(radius * 1.26, radius * .39, radius * .73);
-    dummy.rotation.set((random() - .5) * .23, random() * 6.28, 0);
+    const [cx,cz,r] = slabs[i % slabs.length];
+    const large = i < slabs.length;
+    const px = large ? cx : cx + (random()-.5)*.65;
+    const pz = large ? cz : cz + (random()-.5)*.46;
+    const radius = large ? r : .025+random()*.061;
+    dummy.position.set(px, groundY(px,pz) + radius*.08, pz);
+    dummy.scale.set(radius*1.36, radius*.48, radius*.76);
+    dummy.rotation.set((random()-.5)*.42, random()*Math.PI, (random()-.5)*.39);
     dummy.updateMatrix();
     pebbles.setMatrixAt(i, dummy.matrix);
-    tint.setHSL(.10 + random() * .06, .05 + random() * .09, .34 + random() * .23);
-    pebbles.setColorAt(i, tint);
+    tint.set(0xeee9d9).lerp(aged, random()*.48);
+    pebbles.setColorAt(i,tint);
   }
   pebbles.receiveShadow = true;
   marker.add(pebbles);
@@ -344,7 +459,7 @@ export function addMemorial(group, heightAt, memorial, signal) {
   const dummy = new THREE.Object3D();
   // The path remains open: these markers form small groups on the meadow's outer slopes.
   const clearings = [[-28, 24], [-32, 21], [-33, 25], [-23, 13], [-27, 11], [-26, 15]];
-  const distant = new THREE.InstancedMesh(stone, surface, clearings.length);
+  const distant = new THREE.InstancedMesh(stoneGeometry(.24), surface, clearings.length);
   clearings.forEach(([px, pz], i) => {
     dummy.position.set(px, heightAt(px, pz) - .065, pz);
     const scale = .33 + random() * .19;
@@ -355,11 +470,12 @@ export function addMemorial(group, heightAt, memorial, signal) {
   });
   distant.receiveShadow = distant.castShadow = true;
   group.add(distant);
+  return surface;
 }
 
-export function addFamilyMarkers(group, heightAt, gardens, signal, blockers) {
+export function addFamilyMarkers(group, heightAt, gardens, signal, blockers, memorialStone) {
   if (!gardens.length) return;
-  const stone=stoneGeometry(), surface=limestone(), random=randomSource(372);
+  const stone=stoneGeometry(.65), surface=memorialStone || limestone(), random=randomSource(372);
   const columns=Math.min(gardens.length,4);
   gardens.forEach((garden,i)=>{
     // Continue the family rows down the hillside, with visitors looking west.

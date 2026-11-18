@@ -29,7 +29,7 @@ function showPlace(id) {
   $('#landscape').src = selected.image;
   $('#landscape').alt = selected.alt;
   vista.dataset.current = selected.id;
-  $('#region').textContent = selected.region;
+  $('#region').textContent = selected.region + ' · 景观设定图';
   $('#english-name').textContent = selected.english;
   $('#place-name').textContent = $('#walk-place').textContent = selected.name;
   $('#place-copy').textContent = selected.description;

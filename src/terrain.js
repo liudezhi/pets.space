@@ -1,6 +1,9 @@
 import * as THREE from 'three'
 import { surfaceTexture } from './world-materials.js'
+import { addRiver, riverX, riverWidth, riverbedHeight } from './terrain-river.js'
+import { addBridge } from './terrain-bridge.js'
 import { atmosphere } from './world-atmosphere.js'
+import { mountainRanges } from './valley-horizon.js'
 import { buildCourtyard } from './world-courtyard.js'
 import { addForest } from './terrain-forest.js'
 import { addMemorial, memorialPlots } from './terrain-memorial.js'
@@ -8,7 +11,6 @@ import { addMemorial, memorialPlots } from './terrain-memorial.js'
 const WORLD = 190
 const BRIDGE_END = 6.5
 const WALK_WIDTH = 1.2
-const WATER_LEVEL = 0
 const clamp = THREE.MathUtils.clamp
 const mix = THREE.MathUtils.lerp
 const { sin, cos, abs, exp, pow, PI } = Math
@@ -25,14 +27,6 @@ function randomSource(seed) {
   }
 }
 
-function riverX(z) {
-  return 0.12 * z + 3.1 * sin(z * 0.076) + 1.7 * sin(z * 0.13)
-}
-
-function riverWidth(z) {
-  return 3.55 + 1.35 * smooth(4, 24, abs(z)) + 0.55 * sin(z * 0.11)
-}
-
 function bridgeDeck(x) {
   return 2.1 - 0.95 * pow(x / BRIDGE_END, 2)
 }
@@ -40,13 +34,13 @@ function bridgeDeck(x) {
 function ground(x, z) {
   const side = x - riverX(z)
   const bank = abs(side) - riverWidth(z)
-  const terrace = smooth(-0.75, 2.6, bank)
   const lift = side < 0 ? 6.7 : 4.35
   const rise = smooth(3, side < 0 ? 40 : 24, bank)
-  const relief = 0.5 * sin(z * 0.13 + x * 0.09) + 0.31 * cos(x * 0.23 - z * 0.11)
-  const rolling = smooth(8, 22, bank) * relief
-  const approach = exp(-0.14 * z * z) * (1 - smooth(0.4, 5, abs(abs(x) - BRIDGE_END)))
-  const terrain = -1.25 + terrace * 2.33 + rise * lift + rolling
+  const relief = 1.15*sin(z*.073+x*.067) + .62*cos(x*.14-z*.087) + .19*sin(z*.35+x*.19)
+  const rolling = smooth(8, 26, bank)*relief + smooth(30,61,bank)*2.8*cos(x*.08+z*.063)
+  const approach = exp(-.14*z*z)*(1-smooth(.4,5,abs(abs(x)-BRIDGE_END)))
+  const terrace = bank < 0 ? riverbedHeight(x,z) : -.035+1.09*smooth(-.35,3.18,bank)
+  const terrain = terrace + rise*lift + rolling
   return mix(terrain, bridgeDeck(clamp(x, -BRIDGE_END, BRIDGE_END)), approach)
 }
 
@@ -88,27 +82,38 @@ function mesh(group, geo, mat) {
 }
 
 function buildGround(group) {
-  const g = new THREE.PlaneGeometry(WORLD, WORLD, 184, 184).rotateX(-PI / 2)
-  const p = g.attributes.position
-  const colors = []
-  const c = new THREE.Color()
-  const green = new THREE.Color('#dbe7c3')
-  const shadow = new THREE.Color('#b7c798')
-  const hay = new THREE.Color('#f9f0cd')
-  const shore = new THREE.Color('#b8b69c')
-  for (let i = 0; i < p.count; i++) {
-    const x = p.getX(i), z = p.getZ(i)
-    p.setY(i, ground(x, z))
-    const patch = 0.5 + 0.24 * sin(x * 0.14 + z * 0.2) + 0.16 * cos(z * 0.31 - x * 0.13) + 0.08 * sin(z * 1.1 + x * 0.77)
-    c.copy(shadow).lerp(green, smooth(0.04, 0.67, patch)).lerp(hay, smooth(0.5, 1, patch) * 0.7)
-    c.lerp(shore, 1 - smooth(0.4, 3.9, abs(x - riverX(z)) - riverWidth(z)))
-    colors.push(c.r, c.g, c.b)
+  // Follow the river contour at each row. The riverbed owns its submerged triangles,
+  // preventing broad grassy facets from cutting across the pebble shoreline.
+  const positions=[],uv=[],colors=[],faces=[]
+  const rows=232, cols=56, width=WORLD/2
+  const lo=new THREE.Color('#c3caa5'), high=new THREE.Color('#f3e8bd'), tint=new THREE.Color()
+  for(const side of [-1,1]){
+    const start=positions.length/3
+    for(let row=0;row<=rows;row++){
+      const z=-96+row*192/rows, center=riverX(z), rail=center+side*(riverWidth(z)+.50)
+      for(let col=0;col<=cols;col++){
+        const t=col/cols, x=mix(rail,side*width, .48*t+.52*t*t)
+        positions.push(x,ground(x,z)-.015,z)
+        uv.push(x/WORLD+.5,z/WORLD+.5)
+        const patch=.48+.26*sin(.15*x+.22*z)+.16*cos(.32*z-.11*x)+.08*sin(1.13*z+x*.79)
+        tint.copy(lo).lerp(high, smooth(.08,.91,patch))
+        colors.push(tint.r,tint.g,tint.b)
+        if(row&&col){
+          const d=start+row*(cols+1)+col
+          if(side>0) faces.push(d-cols-2,d-1,d,d-cols-2,d,d-cols-1)
+          else faces.push(d-cols-2,d,d-1,d-cols-2,d-cols-1,d)
+        }
+      }
+    }
   }
-  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-  g.computeVertexNormals()
-  const land = mesh(group, g, new THREE.MeshStandardMaterial({ map: surfaceTexture('meadow',122), vertexColors: true, roughness: 1 }))
-  land.userData.habitat = 'ground'
-  land.receiveShadow = true
+  const geo=new THREE.BufferGeometry()
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
+  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
+  geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
+  geo.setIndex(faces);geo.computeVertexNormals()
+  const mat=new THREE.MeshStandardMaterial({map:surfaceTexture('meadow',125),vertexColors:true,roughness:.94})
+  const land=mesh(group,geo,mat)
+  land.userData.habitat='ground';land.receiveShadow=true
 }
 
 function trailGeometry(group) {
@@ -144,210 +149,62 @@ function trailGeometry(group) {
   mesh(group, geo, new THREE.MeshStandardMaterial({map:surfaceTexture('gravel'),vertexColors:true,roughness:1,side:THREE.DoubleSide,transparent:true,depthWrite:false})).userData.habitat='trail'
 }
 
-function mountainRanges(group) {
-  const map=surfaceTexture('ridges');
-  map.repeat.set(4,1);
-  map.wrapT=THREE.ClampToEdgeWrapping;
-  // Both rings have their own parallax and horizon. The sky stays visible through
-  // the photographic alpha edge, with time-of-day haze applied by the atmosphere.
-  for(const [radius,height,bottom,yaw,air] of [[220,104,-21,.81,.45],[140,61,-19,.08,.18]]){
-    const material=new THREE.MeshBasicMaterial({map,side:THREE.BackSide,alphaTest:.24,fog:false});
-    const ridge=mesh(group,new THREE.CylinderGeometry(radius,radius,height,112,1,true),material);
-    ridge.position.y=bottom+height*.5;
-    ridge.rotation.y=yaw;
-    ridge.name='远山';
-    ridge.userData.air=air;
-    ridge.userData.habitat='ridge';
-  }
-}
-
-function addBanks(group, riverbed) {
-  const vertices=[], uvs=[], colors=[], indices=[];
-  const strips=4, samples=220;
-  for (const side of [-1,1]) {
-    const start=vertices.length/3;
-    for(let i=0; i<=samples; i++) {
-      const z=-90+i*180/samples, width=riverWidth(z);
-      for(let band=0;band<strips;band++){
-        const offset=[-.4,.5,1.45,2.45+.4*Math.sin(z*.66)][band];
-        const x=riverX(z)+side*(width+offset);
-        vertices.push(x,ground(x,z)+.055,z);uvs.push(x*.8+z*.16,z*.79-x*.16);
-        const wet=[.62,.78,.96,.98][band];
-        colors.push(wet,wet,wet,[.96,1,.83,0][band]);
-        if(i&&band){
-          const d=start+i*strips+band;
-          indices.push(d-strips-1,d-1,d,d-strips-1,d,d-strips);
-        }
-      }
-    }
-  }
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
-  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,4));
-  geo.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
-  geo.setIndex(indices);geo.computeVertexNormals();
-  mesh(group,geo,new THREE.MeshStandardMaterial({map:riverbed,vertexColors:true,side:THREE.DoubleSide,transparent:true,depthWrite:false,roughness:.76}));
-}
-
-function addWater(group, riverbed) {
-  const positions = [], indices = [], banks = [];
-  for (let i = 0; i <= 240; i++) {
-    const z = -96 + 192 * i / 240
-    const mid = riverX(z), w = riverWidth(z) + 1.15
-    positions.push(mid - w, WATER_LEVEL, z, mid + w, WATER_LEVEL, z)
-    banks.push(-1,1)
-    if (i) {
-      const a = i * 2
-      indices.push(a - 2, a, a - 1, a - 1, a, a + 1)
-    }
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geo.setIndex(indices)
-  geo.setAttribute('bank',new THREE.Float32BufferAttribute(banks,1))
-  const water = mesh(group, geo, new THREE.ShaderMaterial({
-    uniforms: { time: { value: 0 }, sun:{value:new THREE.Vector3()}, wet:{value:0}, tone:{value:1}, bed:{value:riverbed} },
-    vertexShader: 'varying vec3 wp; varying float bankFactor; attribute float bank; void main(){wp=position;bankFactor=bank;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-    fragmentShader: `
-      varying vec3 wp; varying float bankFactor; uniform sampler2D bed; uniform float time,wet,tone; uniform vec3 sun;
-      void main(){
-        vec3 view=normalize(cameraPosition-wp);
-        float t=mod(time,3600.);
-        float wave=sin(wp.z*5.1-t*1.9+sin(wp.x*2.4+wp.z*.4))+sin(wp.z*9.-t*2.7+wp.x*2.)*.28;
-        float coarse=sin(wp.x*1.1+wp.z*.8-t*.27)*.5+.5;
-        vec3 norm=normalize(vec3(cos(wp.x*3.+wp.z*1.8-t)*.045,1.,wave*.105));
-        float fres=pow(1.-max(dot(norm,view),0.),2.4);
-        vec3 col=mix(vec3(.08,.23,.20),vec3(.22,.39,.31),coarse*.67+.12*wave);
-        float shallow=smoothstep(.40,.91,abs(bankFactor));
-        vec3 pebble=texture2D(bed,wp.xz*.65+norm.xz*.07).rgb;
-        col=mix(col,pebble*vec3(.58,.80,.70),shallow*.8);
-        col=mix(col,vec3(.58,.71,.73),.09+.72*fres);
-        wave+=wet*.35*sin(length(fract(wp.xz*1.7)-.5)*43.-t*8.);
-        float spec=pow(max(dot(normalize(view+sun),norm),0.),120.);
-        col+=vec3(1.,.77,.42)*spec*.95;
-        float ripple=smoothstep(1.04,1.22,wave)*smoothstep(.58,.9,coarse);
-        col+=vec3(.16,.22,.18)*ripple;
-        col=mix(col,vec3(.61,.70,.64),smoothstep(30.,130.,length(cameraPosition-wp))*.5);
-        gl_FragColor=vec4(col*tone,1.);
-        #include <colorspace_fragment>
-      }`,
-  }))
-  return water.material.uniforms
-}
-
-function addBridge(group) {
-  const archWidth = 4.5
-  const spring = -0.38
-  const archRise = 1.98
-  const shape = new THREE.Shape()
-  shape.moveTo(-BRIDGE_END, -1.55)
-  shape.lineTo(-BRIDGE_END, bridgeDeck(-BRIDGE_END))
-  for (let i = 1; i <= 36; i++) {
-    const x = -BRIDGE_END + 2 * BRIDGE_END * i / 36
-    shape.lineTo(x, bridgeDeck(x))
-  }
-  shape.lineTo(BRIDGE_END, -1.55)
-  shape.lineTo(archWidth, -1.55)
-  for (let i = 0; i <= 36; i++) {
-    const a = i / 36 * PI
-    shape.lineTo(archWidth * cos(a), spring + archRise * sin(a))
-  }
-  shape.lineTo(-archWidth, -1.55)
-  shape.closePath()
-  const arch = mesh(group, new THREE.ExtrudeGeometry(shape, { depth: 3.15, bevelEnabled: false }), new THREE.MeshStandardMaterial({ color: '#a39478', roughness: .98 }))
-  arch.position.z = -1.575
-  const colors = [], positions = []
-  const stoneTints = ['#ac9d83','#b5a58b','#c3b59a','#9d947c','#afa58c']
-  function face(a, b, c, d, tint) {
-    const color = new THREE.Color(tint)
-    for (const v of [a,b,c,a,c,d]) {
-      positions.push(...v)
-      colors.push(color.r, color.g, color.b)
-    }
-  }
-  // Individual voussoirs follow the actual elliptical opening.
-  for (const sign of [-1, 1]) {
-    const z = sign * 1.588
-    for (let i = 0; i < 28; i++) {
-      const a = PI * i / 28 + .005, b = PI * (i + 1) / 28 - .005
-      const corner = (theta, ox, oy) => [(archWidth + ox) * cos(theta), spring + (archRise + oy) * sin(theta), z]
-      face(corner(a,0,0),corner(b,0,0),corner(b,.53,.29),corner(a,.53,.29),stoneTints[i % 5])
-    }
-    // Low masonry parapets: offsets and seams keep their silhouette legible.
-    for (let i = 0; i < 17; i++) {
-      const a = -BRIDGE_END + 2 * BRIDGE_END * i / 17 + .017
-      const b = a + 2 * BRIDGE_END / 17 - .033
-      const ya = bridgeDeck(a), yb = bridgeDeck(b)
-      const outer = sign * 1.585, inner = sign * 1.29
-      const h = .51 + .045 * sin(i * 3.7)
-      face([a,ya,outer],[b,yb,outer],[b,yb+h,outer],[a,ya+h,outer],stoneTints[(i+2)%5])
-      face([a,ya,inner],[b,yb,inner],[b,yb+h,inner],[a,ya+h,inner],stoneTints[(i+1)%5])
-      face([a,ya+h,inner],[a,ya+h,outer],[b,yb+h,outer],[b,yb+h,inner],'#cec3ab')
-      face([a,ya,inner],[a,ya,outer],[a,ya+h,outer],[a,ya+h,inner],'#94866f')
-      face([b,yb,inner],[b,yb,outer],[b,yb+h,outer],[b,yb+h,inner],'#94866f')
-    }
-  }
-  for (let i=0;i<30;i++) {
-    const x = -BRIDGE_END + .014 + 2*BRIDGE_END*i/30
-    const x2 = x + 2*BRIDGE_END/30 - .028
-    for (let j=0;j<3;j++) {
-      const z=-1.32+j*.88+.01, z2=z+.86
-      face([x,bridgeDeck(x)+.012,z],[x,bridgeDeck(x)+.012,z2],[x2,bridgeDeck(x2)+.012,z2],[x2,bridgeDeck(x2)+.012,z],stoneTints[(i+2*j)%5])
-    }
-  }
-  const geo=new THREE.BufferGeometry()
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
-  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
-  geo.computeVertexNormals()
-  mesh(group,geo,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:1})).userData.habitat='stone'
-}
-
 function scatterMeadow(group, random, birchPlot) {
-  const positions=[], colors=[]
-  const grassBase = new THREE.Color('#87925a')
-  const grassTip = new THREE.Color('#c2c58b')
+  const positions=[], colors=[], uv=[], normals=[]
+  const rootTint=new THREE.Color('#c4c5a9'), seedTint=new THREE.Color('#ced4bd')
   const dummy = new THREE.Object3D()
   const rocks=[], blossoms=[]
-  for (let i=0;i<31500;i++) {
+  // Small grass clumps use the photographed silhouettes of many interlaced blades.
+  // One oversize triangle holds each texture. Its only moving vertex is the tip,
+  // matching the seasonal shader and keeping stems anchored without splitting cards.
+  for (let i=0;i<19800;i++) {
     const x=random()*98-59, z=random()*85-39
     const bank=abs(x-riverX(z))-riverWidth(z)
-    if (bank < .85 || (x>25.4 && x<34.5 && z>-10.6 && z<-2.4)) continue
-    const distance=pathDistance(x,z)
-    if (distance<1.12 || (abs(z)<1.75 && abs(x)<BRIDGE_END+1.3)) continue
-    if (Math.hypot(x+12,z-6)<1.12) continue
-    if (birchPlot && Math.hypot(x - birchPlot.x, z - birchPlot.z) < 1.15) continue
-    const y=ground(x,z)
-    const angle=random()*PI*2
-    const damp=bank<3.25
-    const tall=(.09+.17*random())*(damp?1.62:1)
-    const light=.72+random()*.39
-    const b=grassBase.clone().multiplyScalar(light*.87)
-    const t=grassTip.clone().multiplyScalar(light*.9)
-    for (let j=0;j<4;j++) {
-      const a=angle+j*2.4
-      const tx=x+sin(a)*.09, tz=z+cos(a)*.09
-      const w=.009+random()*.016
-      positions.push(tx-w*cos(a),y-.025,tz+w*sin(a),tx+w*cos(a),y-.025,tz-w*sin(a),tx+sin(a)*.11+.06,y+tall*(.68+random()*.5),tz+cos(a)*.11)
-      colors.push(b.r,b.g,b.b,b.r,b.g,b.b,t.r,t.g,t.b)
+    if (bank < .9 || (x>25.4 && x<34.5 && z>-10.6 && z<-2.4)) continue
+    if (pathDistance(x,z)<1.29 || (abs(z)<1.75 && abs(x)<BRIDGE_END+1.3)) continue
+    if (Math.hypot(x+12,z-6)<1.30) continue
+    if (birchPlot && Math.hypot(x-birchPlot.x,z-birchPlot.z)<1.25) continue
+    const patch=.5+.25*sin(x*.54+z*.32)+.14*cos(x*.38-z*.66)+.09*sin(x*1.23+z*.72)
+    if(random()>.32+.69*patch) continue
+    const y=ground(x,z), damp=bank<3.5
+    const tall=(.055+(.065+.12*patch)*random())*(damp?1.28:1)
+    const angle=random()*PI*2, width=tall*(.93+random()*.52)
+    const light=.75+random()*.33
+    const b=rootTint.clone().multiplyScalar(light), tip=seedTint.clone().multiplyScalar(light)
+    const bend=.05+random()*.14
+    for(let j=0;j<(patch>.54?3:2);j++){
+      const axis=angle+j*(1.14+random()*.42), wx=cos(axis)*width*1.16, wz=sin(axis)*width*1.16
+      const px=x+cos(axis)*.027, pz=z+sin(axis)*.027
+      positions.push(px-wx,y-.018,pz-wz, px+wx,y-.018,pz+wz, px+bend*tall,y+2.22*tall,pz-.09*tall)
+      uv.push(-.66,0,1.66,0,.5,2.22)
+      colors.push(b.r,b.g,b.b,b.r,b.g,b.b,tip.r,tip.g,tip.b)
+      // Clump lighting approximates the many upward-facing leaves within the card.
+      for(let n=0;n<3;n++) normals.push(-.18*sin(axis),.983,.18*cos(axis))
     }
-    if (!damp && random()<.035 && sin(x*.48+z*.7)>.15) {
-      blossoms.push([x,y+tall*.91,z,.022+random()*.028,random()<.78?'#fff7ce':'#e5bd69'])
+    if (!damp && random()<.034 && sin(x*.48+z*.7)>.15) {
+      blossoms.push([x,y+tall*.67,z,.012+random()*.017,random()<.78?'#e1d9af':'#bea66d'])
     }
   }
   const meadow=new THREE.BufferGeometry()
   meadow.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
   meadow.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
-  mesh(group,meadow,new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide})).userData.habitat='grass'
-
-  const stoneColors=['#7d8479','#94998c','#a0a294','#b1b4a1','#868a77']
-  for(let i=0;i<1550;i++) {
-    const z=random()*149-74.5
-    const side=random()>.5?1:-1
-    const x=riverX(z)+side*(riverWidth(z)+random()*2.75-1.15)
-    if (abs(z)<2.05 && abs(x)<7) continue
-    const scale=.045+pow(random(),3)*.57
-    rocks.push([x,ground(x,z)+scale*.10,z,scale,stoneColors[i%5]])
+  meadow.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
+  meadow.setAttribute('normal',new THREE.Float32BufferAttribute(normals,3))
+  const grasses=surfaceTexture('meadow-fescue')
+  grasses.wrapS=grasses.wrapT=THREE.ClampToEdgeWrapping
+  const grass=mesh(group,meadow,new THREE.MeshLambertMaterial({
+    map:grasses,vertexColors:true,side:THREE.DoubleSide,alphaTest:.11,alphaToCoverage:true
+  }))
+  // Both sides represent the same cluster of narrow leaves. Keep their shared
+  // upward-facing normal so the reverse side receives the same skylight.
+  grass.material.onBeforeCompile=shader=>{
+    shader.fragmentShader=shader.fragmentShader.replace('#include <normal_fragment_begin>',
+      '#include <normal_fragment_begin>\nnormal *= faceDirection;')
   }
+  grass.material.customProgramCacheKey=()=> 'meadow-transmission'
+  grass.name='冷季草甸'
+  grass.userData.habitat='grass'
+
   for(let i=0;i<1000;i++) {
     const route=trail.getPointAt(random())
     const x=route.x+random()*2.4-1.2,z=route.z+random()*2.4-1.2
@@ -377,19 +234,17 @@ export function buildTerrain(scene, memorial, prefs = {}, reducedMotion) {
   const previousFog=scene.fog
   scene.add(group)
   const random=randomSource(746)
-  mountainRanges(group)
+  const ridgeTexture=mountainRanges(group)
   buildGround(group)
   trailGeometry(group)
-  const riverbed=surfaceTexture('riverbed')
-  addBanks(group,riverbed)
-  const water=addWater(group,riverbed)
+  const water=addRiver(group,ground,ridgeTexture)
   addBridge(group)
   const birchPlot = memorial?.place === 'entrance' ? memorialPlots.entrance : null
   scatterMeadow(group,random,birchPlot)
-  addForest(group,heightAt,riverX)
+  addForest(group,heightAt,riverX,pathDistance)
   const portraitRequests = new AbortController()
-  addMemorial(group,heightAt,memorial,portraitRequests.signal)
-  const grounds = buildCourtyard(group,heightAt,memorial,portraitRequests.signal)
+  const memorialStone=addMemorial(group,heightAt,memorial,portraitRequests.signal)
+  const grounds = buildCourtyard(group,heightAt,memorial,portraitRequests.signal,memorialStone)
   const climate = atmosphere(scene,group,water,prefs,reducedMotion)
   let disposed=false
   return {
@@ -415,6 +270,9 @@ export function buildTerrain(scene, memorial, prefs = {}, reducedMotion) {
           if(!material) continue
           resources.add(material)
           for(const value of Object.values(material)) if(value?.isTexture) resources.add(value)
+          for(const uniform of Object.values(material.uniforms ?? {})) {
+            if(uniform.value?.isTexture) resources.add(uniform.value)
+          }
         }
       })
       resources.forEach(resource=>resource.dispose())

@@ -10,7 +10,7 @@ const gardenViews = {
   courtyard: courtyardView,
   entrance: { x: -40, z: 30, faceX: 20, faceZ: -16, pitch: -0.055 },
   stone: { x: memorialPlots.stone.viewX, z: memorialPlots.stone.viewZ, faceX: memorialPlots.stone.lookX, faceZ: memorialPlots.stone.lookZ, pitch: -0.18 },
-  tree: { x: 17, z: -15, faceX: -40, faceZ: 30, pitch: -0.09 },
+  tree: { x: 26, z: -15.2, faceX: -40, faceZ: 30, phoneTarget: { x: -40, z: -2.3 }, pitch: -0.09 },
 };
 const controls = new Map([
   ['KeyW', 'forward'], ['ArrowUp', 'forward'],
@@ -35,6 +35,8 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     },
   } : gardenViews;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(65, 1, 0.08, 700);
   const canvas = renderer.domElement;
@@ -56,7 +58,12 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   let lastY = 0;
   let previousTime = 0;
   let animationTime = 0;
-  let resolutionLimit = Infinity;
+  let quality = environment?.quality ?? 'auto';
+  let motionRatio = 1.35;
+  let lastMotion = -Infinity;
+  let walkingResolution = false;
+  let lastDetail;
+  const started = performance.now();
   let sampleSeconds = 0;
   let sampleFrames = 0;
 
@@ -106,7 +113,11 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     clearInput();
     camera.position.set(point.x, terrain.heightAt(point.x, point.z) + eyeHeight, point.z);
     // Preserve the whole portrait in a narrow viewport; leave room for the river on desktop.
-    const target = point === places.stone && camera.aspect < .85 ? memorialPlots.stone : {x:point.faceX,z:point.faceZ};
+    let narrowTarget = point === places.stone ? memorialPlots.stone : point.phoneTarget;
+    if (point === places.courtyard) {
+      narrowTarget = { x: point.faceX, z: memorial?.courtyard ? point.narrowFaceZ : point.narrowEmptyFaceZ };
+    }
+    const target = camera.aspect < .85 && narrowTarget ? narrowTarget : {x:point.faceX,z:point.faceZ};
     yaw = Math.atan2(point.x - target.x, point.z - target.z);
     pitch = point.pitch;
     camera.rotation.set(pitch, yaw, 0, 'YXZ');
@@ -117,7 +128,15 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   function resize() {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
-    const ratio = Math.min(window.devicePixelRatio || 1, width < 800 ? 1.35 : 1.6, resolutionLimit);
+    const native = Math.min(window.devicePixelRatio || 1, width < 800 ? 1.45 : 1.65);
+    const ratio = quality === 'low' ? Math.min(native, .8)
+      : quality === 'auto' && walkingResolution ? Math.min(native, motionRatio) : native;
+    // Keep the ceramic print and stone grain legible when someone stops to look.
+    const detail = quality === 'low' ? .4 : quality === 'auto' && walkingResolution && motionRatio < .85 ? .62 : 1;
+    if (detail !== lastDetail) {
+      terrain.setDetail(detail);
+      lastDetail = detail;
+    }
     renderer.setDrawingBufferSize(width, height, ratio);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
@@ -147,15 +166,22 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   function draw(time) {
     const elapsed = previousTime ? (time - previousTime) / 1000 : 0;
     previousTime = time;
-    // Look for sustained slowness; a single shader compilation need not lower detail.
-    if (elapsed > 0 && elapsed < 1 && resolutionLimit > 0.5) {
+    if (keys.size || touches.size || lookPointer !== null) lastMotion = time;
+    const moving = time - lastMotion < 450;
+    if (moving !== walkingResolution) {
+      walkingResolution = moving;
+      if (quality === 'auto') resize();
+    }
+    // Judge sustained motion only after the initial texture uploads and shader compilation.
+    if (quality === 'auto' && moving && time - started > 2000 && elapsed > 0 && elapsed < 1.5) {
       sampleSeconds += elapsed;
       sampleFrames++;
-      if (sampleSeconds >= 1 && sampleFrames >= 3) {
-        if (sampleSeconds / sampleFrames > 1 / 24) {
-          resolutionLimit = Math.max(0.5, renderer.getPixelRatio() * 0.74);
-          // The meadow underlay keeps close-up detail when slow GPUs draw fewer individual blades.
-          if (resolutionLimit < .8) terrain.setDetail(resolutionLimit === .5 ? .34 : .62);
+      if (sampleSeconds >= 1.5 && sampleFrames >= 5) {
+        const average = sampleSeconds / sampleFrames;
+        const next = average > 1 / 23 ? Math.max(.65, motionRatio - .20)
+          : average < 1 / 43 ? Math.min(1.35, motionRatio + .10) : motionRatio;
+        if (next !== motionRatio) {
+          motionRatio = next;
           resize();
         }
         sampleSeconds = 0;
@@ -261,7 +287,15 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     resize();
     goTo(Object.hasOwn(places, initial) ? initial : site ? memorial.place : 'entrance');
     syncVisibility();
-    return { goTo, dispose, setEnvironment(patch) { if (!disposed) terrain.setEnvironment(patch); } };
+    return { goTo, dispose, setEnvironment(patch) {
+      if (disposed) return;
+      if (patch.quality && patch.quality !== quality) {
+        quality = patch.quality;
+        sampleSeconds = sampleFrames = 0;
+        resize();
+      }
+      terrain.setEnvironment(patch);
+    } };
   } catch (error) {
     dispose();
     throw error;
