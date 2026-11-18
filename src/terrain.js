@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { addForest } from './terrain-forest.js'
-import { addMemorial } from './terrain-memorial.js'
+import { addMemorial, memorialPlots } from './terrain-memorial.js'
 
 const WORLD = 190
 const BRIDGE_END = 6.5
@@ -52,9 +52,10 @@ function heightAt(x, z) {
   return ground(x, z)
 }
 
-function canWalkAt(x, z) {
+function canWalkAt(x, z, birchPlot) {
   if (x < -56 || x > 40 || z < -38 || z > 46) return false
   if (Math.hypot(x + 12, z - 6) < 1.1 || Math.hypot(x - 20, z + 16) < 1.25) return false
+  if (birchPlot && Math.hypot(x - birchPlot.x, z - birchPlot.z) < 1.1) return false
   if (abs(z) < WALK_WIDTH && abs(x) < BRIDGE_END + 0.5) return true
   return abs(x - riverX(z)) > riverWidth(z) + 1.35
 }
@@ -325,7 +326,7 @@ function addBridge(group) {
   mesh(group,geo,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:1}))
 }
 
-function scatterMeadow(group, random) {
+function scatterMeadow(group, random, birchPlot) {
   const positions=[], colors=[]
   const grassBase = new THREE.Color('#87925a')
   const grassTip = new THREE.Color('#c2c58b')
@@ -338,6 +339,7 @@ function scatterMeadow(group, random) {
     const distance=pathDistance(x,z)
     if (distance<1.12 || (abs(z)<1.75 && abs(x)<BRIDGE_END+1.3)) continue
     if (Math.hypot(x+12,z-6)<1.12) continue
+    if (birchPlot && Math.hypot(x - birchPlot.x, z - birchPlot.z) < 1.15) continue
     const y=ground(x,z)
     const angle=random()*PI*2
     const damp=bank<3.25
@@ -392,7 +394,7 @@ function scatterMeadow(group, random) {
   scatter(blossoms,new THREE.IcosahedronGeometry(1,0),true)
 }
 
-export function buildTerrain(scene) {
+export function buildTerrain(scene, memorial) {
   const group=new THREE.Group()
   group.name='Riverbend valley'
   const previousFog=scene.fog
@@ -403,17 +405,20 @@ export function buildTerrain(scene) {
   trailGeometry(group)
   const waterTime=addWater(group)
   addBridge(group)
-  scatterMeadow(group,random)
+  const birchPlot = memorial?.place === 'entrance' ? memorialPlots.entrance : null
+  scatterMeadow(group,random,birchPlot)
   addForest(group,heightAt,riverX)
-  addMemorial(group,heightAt)
+  const portraitRequests = new AbortController()
+  addMemorial(group,heightAt,memorial,portraitRequests.signal)
   let disposed=false
   return {
     heightAt,
-    canWalkAt,
+    canWalkAt: (x, z) => canWalkAt(x, z, birchPlot),
     update(elapsed) { waterTime.value=elapsed },
     dispose() {
       if (disposed) return
       disposed=true
+      portraitRequests.abort()
       scene.remove(group)
       scene.fog=previousFog
       const resources=new Set()

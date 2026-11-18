@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { buildTerrain } from './terrain.js';
+import { memorialPlots } from './terrain-memorial.js';
 import './walk.css';
 
 // X points east and -Z north. Each arrival faces a meaningful part of the garden.
-const places = {
+const gardenViews = {
   entrance: { x: -40, z: 30, faceX: 20, faceZ: -16, pitch: -0.055 },
   stone: { x: -10, z: 9, faceX: -12, faceZ: 6, pitch: -0.18 },
   tree: { x: 17, z: -15, faceX: -40, faceZ: 30, pitch: -0.09 },
@@ -22,7 +23,14 @@ const touchButtons = [
 const stride = 3.8;
 const eyeHeight = 1.55;
 
-export function startWalk(container, { initial = 'entrance', onPlace, onExit, onError } = {}) {
+export function startWalk(container, { initial, memorial, onPlace, onExit, onError } = {}) {
+  const site = Object.hasOwn(memorialPlots, memorial?.place) ? memorialPlots[memorial.place] : null;
+  const places = site ? {
+    ...gardenViews,
+    [memorial.place]: {
+      x: site.viewX, z: site.viewZ, faceX: site.x, faceZ: site.z, pitch: -0.23,
+    },
+  } : gardenViews;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(65, 1, 0.08, 700);
@@ -163,7 +171,7 @@ export function startWalk(container, { initial = 'entrance', onPlace, onExit, on
   }
 
   try {
-    terrain = buildTerrain(scene);
+    terrain = buildTerrain(scene, memorial);
     canvas.className = 'garden-walk-canvas';
     canvas.tabIndex = 0;
     canvas.setAttribute('aria-label', '河湾漫游，方向键或 WASD 移动，Q 和 E 转头，拖动可环顾，Esc 返回');
@@ -232,7 +240,7 @@ export function startWalk(container, { initial = 'entrance', onPlace, onExit, on
     resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(container);
     resize();
-    goTo(Object.hasOwn(places, initial) ? initial : 'entrance');
+    goTo(Object.hasOwn(places, initial) ? initial : site ? memorial.place : 'entrance');
     syncVisibility();
     return { goTo, dispose };
   } catch (error) {

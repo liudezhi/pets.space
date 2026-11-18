@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 
+export const memorialPlots = {
+  stone: { x: -12, z: 6, viewX: -10, viewZ: 9 },
+  entrance: { x: -34.5, z: 23.5, viewX: -36.3, viewZ: 25.9 },
+};
+
 function randomSource(seed) {
   return () => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -113,15 +118,106 @@ function addDaisies(marker) {
   marker.add(spray);
 }
 
-export function addMemorial(group, heightAt) {
-  const x = -12, z = 6;
+function addGiftBouquet(marker, count) {
+  if (!(count > 0)) return;
+  const positions = [], colors = [];
+  const tint = new THREE.Color();
+  function face(a, b, c, color) {
+    positions.push(...a, ...b, ...c);
+    tint.setHex(color);
+    for (let i = 0; i < 3; i++) colors.push(tint.r, tint.g, tint.b);
+  }
+  function quad(a, b, c, d, color) {
+    face(a, b, c, color);
+    face(a, c, d, color);
+  }
+
+  // An uneven, open linen cone with a sage tie around its pinched waist.
+  const tau = Math.PI * 2;
+  const ring = (i, radius, y) => [radius * Math.cos(i * tau / 12), y, radius * Math.sin(i * tau / 12)];
+  const lip = i => ring(i, i % 2 ? .143 : .127, .29 + .029 * Math.cos(i * tau / 3));
+  for (let i = 0; i < 12; i++) {
+    const next = i + 1;
+    quad(ring(i, .05, 0), ring(next, .05, 0), ring(next, .032, .09), ring(i, .032, .09), 0xc4a783);
+    quad(ring(i, .032, .09), ring(next, .032, .09), lip(next), lip(i), i % 2 ? 0xe0c9a7 : 0xd0b48d);
+    quad(ring(i, .039, .083), ring(next, .039, .083), ring(next, .048, .113), ring(i, .048, .113), 0x667c66);
+  }
+  quad([.014,.103,.045], [.038,.105,.033], [.094,.049,.055], [.079,.053,.065], 0x7d9176);
+
+  // Face the flower heads slightly toward the person standing at the stone.
+  const flowers = [[0,.448,.012],[-.079,.387,.061],[.084,.387,.066],[-.097,.406,-.05],[.089,.424,-.049],[.006,.36,.115]];
+  flowers.forEach(([x, y, z], index) => {
+    quad([-.004,.1,0], [.004,.1,0], [x+.004,y,z], [x-.004,y,z], 0x678052);
+    const leavesRight = index % 2 ? 1 : -1;
+    face([x*.57,.256,z*.57], [x*.7+leavesRight*.033,.3,z*.8], [x+leavesRight*.07,.374,z], 0x719367);
+    const purple = index === 3 || index === 4;
+    const radius = purple ? .035 : .047;
+    const petals = purple ? 5 : 10;
+    for (let j = 0; j < petals; j++) {
+      const angle = j * tau / petals + index * .87;
+      function pt(r, width, lift = 0) {
+        const dx = r * Math.cos(angle) - width * Math.sin(angle);
+        const dz = r * Math.sin(angle) + width * Math.cos(angle);
+        return [x+dx, y-.58*dz+lift, z+.82*dz];
+      }
+      const halfWidth = purple ? .012 : .008;
+      quad(pt(.006,0), pt(radius*.67,-halfWidth), pt(radius,0,.004), pt(radius*.67,halfWidth), purple ? 0xd5bde1 : 0xfffae8);
+      const next = angle + tau / petals;
+      face([x,y+.005,z], pt(.008,0,.001), [x+.008*Math.cos(next),y+.001-.00464*Math.sin(next),z+.00656*Math.sin(next)], 0xf0c15b);
+    }
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  const bouquet = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  bouquet.name = '亲友献上的花束';
+  bouquet.position.set(.38,.06,.65);
+  bouquet.rotation.set(-.36,0,-.46);
+  marker.add(bouquet);
+}
+
+function loadPortrait(texture, source, keepWholePhoto, signal) {
+  // Read through the same authenticated origin; redirects must not expose a private request.
+  async function paint() {
+    if (typeof source !== 'string' || !source.startsWith('/') || source.startsWith('//')) return;
+    const url = new URL(source, location.origin);
+    if (url.origin !== location.origin) return;
+    const response = await fetch(url, {
+      mode: 'same-origin', credentials: 'same-origin', redirect: 'error', referrerPolicy: 'no-referrer',
+      cache: keepWholePhoto ? 'no-store' : 'default', signal,
+    });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    if (signal?.aborted) return;
+    const image = await createImageBitmap(blob);
+    try {
+      if (signal?.aborted) return;
+      const canvas = texture.image;
+      const aspect = image.width / image.height;
+      const width = keepWholePhoto ? Math.min(canvas.width, canvas.height * aspect) : Math.max(canvas.width, canvas.height * aspect);
+      const height = width / aspect;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#e9e4d8';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      texture.needsUpdate = true;
+    } finally {
+      image.close();
+    }
+  }
+  // The neutral ceramic placeholder stays visible if access expires or decoding fails.
+  paint().catch(() => {});
+}
+
+function makeMarker(group, heightAt, place, memorial, stone, surface, signal, random) {
+  const { x, z, viewX, viewZ } = memorialPlots[place];
   const marker = new THREE.Group();
-  marker.name = '河湾纪念石';
+  marker.name = place === 'stone' ? '河湾纪念石' : '桦坡纪念石';
   marker.position.set(x, heightAt(x, z) - .04, z);
-  marker.rotation.y = Math.atan2(2, 3);
+  marker.rotation.y = Math.atan2(viewX - x, viewZ - z);
   group.add(marker);
 
-  const stone = stoneGeometry(), surface = limestone();
   const monument = new THREE.Mesh(stone, surface);
   monument.castShadow = monument.receiveShadow = true;
   marker.add(monument);
@@ -133,37 +229,41 @@ export function addMemorial(group, heightAt) {
   }));
   frame.position.set(0, portraitY, .235);
   marker.add(frame);
-  const photo = new THREE.TextureLoader().load('/pet.webp', (texture) => {
-    const aspect = texture.image.width / texture.image.height;
-    const crop = aspect / (w / h);
-    texture.repeat.set(Math.min(1, 1 / crop), Math.min(1, crop));
-    texture.offset.set((1 - texture.repeat.x) / 2, (1 - texture.repeat.y) / 2);
+  const photo = canvasTexture(512, 640, (ctx) => {
+    ctx.fillStyle = '#e9e4d8';
+    ctx.fillRect(0, 0, 512, 640);
+    ctx.fillStyle = '#887e68';
+    ctx.font = '45px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('留 念', 256, 336);
   });
-  photo.colorSpace = THREE.SRGBColorSpace;
+  loadPortrait(photo, memorial ? memorial.photoUrl : '/pet.webp', !!memorial, signal);
   const portrait = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
     new THREE.MeshBasicMaterial({ map: photo, toneMapped: false }));
   portrait.position.set(0, portraitY, .258);
   marker.add(portrait);
 
+  const dedication = memorial?.name || '永远想念你';
   const inscription = canvasTexture(768, 192, (ctx) => {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '500 79px "Noto Serif CJK SC","Songti SC",serif';
     ctx.fillStyle = '#e6ddc7';
-    ctx.fillText('永远想念你', 385, 89);
+    ctx.fillText(dedication, 385, 89, 730);
     ctx.fillStyle = '#45453b';
-    ctx.fillText('永远想念你', 384, 86);
+    ctx.fillText(dedication, 384, 86, 730);
   });
   const lettering = new THREE.Mesh(new THREE.PlaneGeometry(1.03, .258),
     new THREE.MeshBasicMaterial({ map: inscription, transparent: true, depthWrite: false }));
   lettering.position.set(0, .28, .223);
   marker.add(lettering);
   addDaisies(marker);
+  addGiftBouquet(marker, memorial?.flowerCount);
 
   const pebbleGeometry = new THREE.IcosahedronGeometry(1, 1);
   const pebbles = new THREE.InstancedMesh(pebbleGeometry,
     new THREE.MeshStandardMaterial({ roughness: .97 }), 42);
-  const random = randomSource(1026), dummy = new THREE.Object3D(), tint = new THREE.Color();
+  const dummy = new THREE.Object3D(), tint = new THREE.Color();
   for (let i = 0; i < pebbles.count; i++) {
     const theta = random() * 2 * Math.PI, r = .83 + random() * .55;
     const px = Math.cos(theta) * r, pz = Math.sin(theta) * r * .61;
@@ -180,7 +280,15 @@ export function addMemorial(group, heightAt) {
   }
   pebbles.receiveShadow = true;
   marker.add(pebbles);
+}
 
+export function addMemorial(group, heightAt, memorial, signal) {
+  const stone = stoneGeometry(), surface = limestone();
+  const random = randomSource(1026);
+  makeMarker(group, heightAt, 'stone', memorial?.place === 'stone' ? memorial : null, stone, surface, signal, random);
+  if (memorial?.place === 'entrance') makeMarker(group, heightAt, 'entrance', memorial, stone, surface, signal, randomSource(2841));
+
+  const dummy = new THREE.Object3D();
   // The path remains open: these markers form small groups on the meadow's outer slopes.
   const clearings = [[-28, 24], [-32, 21], [-33, 25], [-23, 13], [-27, 11], [-26, 15]];
   const distant = new THREE.InstancedMesh(stone, surface, clearings.length);
