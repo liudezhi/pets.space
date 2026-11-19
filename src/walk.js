@@ -3,6 +3,7 @@ import { buildTerrain } from './terrain.js';
 import { memorialPlots } from './terrain-memorial.js';
 import { courtyardView } from './world-courtyard.js';
 import { createNeighborhood } from './neighborhood.js';
+import { createWalkQuality } from './walk-quality.js';
 import './walk.css';
 
 // X points east and -Z north. Each arrival faces a meaningful part of the garden.
@@ -38,6 +39,7 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   const scene = new THREE.Scene();
+  scene.matrixAutoUpdate = false;
   const camera = new THREE.PerspectiveCamera(65, 1, 0.08, 700);
   const canvas = renderer.domElement;
   const pad = document.createElement('div');
@@ -59,13 +61,15 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   let previousTime = 0;
   let animationTime = 0;
   let quality = environment?.quality ?? 'auto';
-  let motionRatio = 1.35;
+  const motionQuality = createWalkQuality();
+  let quiet = environment?.reduceMotion ?? reducedMotion.matches;
   let lastMotion = -Infinity;
   let walkingResolution = false;
   let lastDetail;
-  const started = performance.now();
-  let sampleSeconds = 0;
-  let sampleFrames = 0;
+  let lastWidth, lastHeight, lastRatio;
+  let dirty = true;
+  let lastPaint = -Infinity;
+  const requestFrame = () => { dirty = true; };
 
   function clearInput() {
     keys.clear();
@@ -111,6 +115,7 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
 
   function arrive(point) {
     clearInput();
+    dirty = true;
     camera.position.set(point.x, terrain.heightAt(point.x, point.z) + eyeHeight, point.z);
     // Preserve the whole portrait in a narrow viewport; leave room for the river on desktop.
     let narrowTarget = point === places.stone ? memorialPlots.stone : point.phoneTarget;
@@ -129,14 +134,15 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
     const native = Math.min(window.devicePixelRatio || 1, width < 800 ? 1.45 : 1.65);
-    const ratio = quality === 'low' ? Math.min(native, .8)
-      : quality === 'auto' && walkingResolution ? Math.min(native, motionRatio) : native;
-    // Keep the ceramic print and stone grain legible when someone stops to look.
-    const detail = quality === 'low' ? .4 : quality === 'auto' && walkingResolution && motionRatio < .85 ? .62 : 1;
+    const { ratio, detail } = motionQuality.drawingSetup(quality, walkingResolution, native, width, height);
     if (detail !== lastDetail) {
       terrain.setDetail(detail);
       lastDetail = detail;
+      dirty = true;
     }
+    if (width === lastWidth && height === lastHeight && ratio === lastRatio) return;
+    lastWidth = width; lastHeight = height; lastRatio = ratio;
+    dirty = true;
     renderer.setDrawingBufferSize(width, height, ratio);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
@@ -150,7 +156,7 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     if (canWalkAt(position.x + dx, position.z)) position.x += dx;
     if (canWalkAt(position.x, position.z + dz)) position.z += dz;
     position.y = terrain.heightAt(position.x, position.z) + eyeHeight;
-    notifyNearest();
+    dirty = true;
   }
 
   function canWalkAt(x,z) {
@@ -166,27 +172,15 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
   function draw(time) {
     const elapsed = previousTime ? (time - previousTime) / 1000 : 0;
     previousTime = time;
-    if (keys.size || touches.size || lookPointer !== null) lastMotion = time;
+    const held = keys.size || touches.size;
+    if (held) lastMotion = time;
     const moving = time - lastMotion < 450;
     if (moving !== walkingResolution) {
       walkingResolution = moving;
+      motionQuality.resetSamples();
       if (quality === 'auto') resize();
-    }
-    // Judge sustained motion only after the initial texture uploads and shader compilation.
-    if (quality === 'auto' && moving && time - started > 2000 && elapsed > 0 && elapsed < 1.5) {
-      sampleSeconds += elapsed;
-      sampleFrames++;
-      if (sampleSeconds >= 1.5 && sampleFrames >= 5) {
-        const average = sampleSeconds / sampleFrames;
-        const next = average > 1 / 23 ? Math.max(.65, motionRatio - .20)
-          : average < 1 / 43 ? Math.min(1.35, motionRatio + .10) : motionRatio;
-        if (next !== motionRatio) {
-          motionRatio = next;
-          resize();
-        }
-        sampleSeconds = 0;
-        sampleFrames = 0;
-      }
+    } else if (moving && quality === 'auto' && motionQuality.sample(elapsed)) {
+      resize();
     }
     const dt = Math.min(elapsed, 0.35);
     yaw += (active('turnLeft') - active('turnRight')) * dt * 1.6;
@@ -197,25 +191,32 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
       const steps = Math.ceil(dt / 0.05);
       const distance = stride * dt / (Math.hypot(side, forward) * steps);
       for (let i = 0; i < steps; i++) step(side * distance, forward * distance);
+      notifyNearest();
     }
     camera.rotation.set(pitch, yaw, 0, 'YXZ');
     animationTime += dt;
     terrain.update?.(animationTime,camera);
-    neighborhood?.update();
+    // With motion reduced, the sky and water are still. Revisit the frame periodically
+    // for newly decoded portraits, expired flowers and the live park clock.
+    if (!dirty && quiet && !moving && time - lastPaint < 1500) return;
+    if (dirty || moving) neighborhood?.update();
     renderer.render(scene, camera);
+    lastPaint = time;
+    dirty = false;
   }
 
   function syncVisibility() {
     previousTime = 0;
     terrain?.visibility?.();
-    sampleFrames = 0;
-    sampleSeconds = 0;
+    motionQuality.resetSamples();
+    dirty = true;
+    lastMotion = -Infinity;
     clearInput();
     renderer.setAnimationLoop(document.hidden ? null : draw);
   }
 
   try {
-    terrain = buildTerrain(scene, memorial, environment, reducedMotion);
+    terrain = buildTerrain(scene, memorial, environment, reducedMotion, requestFrame);
     canvas.className = 'garden-walk-canvas';
     canvas.tabIndex = 0;
     canvas.setAttribute('aria-label', '河湾漫游，方向键或 WASD 移动，Q 和 E 转头，拖动可环顾，Esc 返回');
@@ -240,11 +241,12 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
       button.addEventListener('click', (event) => {
         if (event.detail !== 0) return;
         step(({ left: -1, right: 1 }[action] || 0) * 0.45, ({ forward: 1, back: -1 }[action] || 0) * 0.45);
+        notifyNearest();
       }, listening);
       pad.append(button);
     }
     container.append(canvas, pad);
-    if (onVisit) neighborhood = createNeighborhood({ scene, camera, container, canvas, terrain, arrive, onVisit });
+    if (onVisit) neighborhood = createNeighborhood({ scene, camera, container, canvas, terrain, arrive, onVisit, onChange: requestFrame });
     canvas.addEventListener('webglcontextlost', (event) => {
       event.preventDefault();
       dispose();
@@ -260,6 +262,8 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     }, listening);
     canvas.addEventListener('pointermove', (event) => {
       if (event.pointerId !== lookPointer) return;
+      lastMotion = performance.now();
+      dirty = true;
       yaw -= (event.clientX - lastX) * 0.004;
       pitch = THREE.MathUtils.clamp(pitch - (event.clientY - lastY) * 0.0035, -1.15, 1.15);
       lastX = event.clientX;
@@ -289,9 +293,11 @@ export function startWalk(container, { initial, memorial, environment, onPlace, 
     syncVisibility();
     return { goTo, dispose, setEnvironment(patch) {
       if (disposed) return;
+      dirty = true;
+      if (typeof patch.reduceMotion === 'boolean') quiet = patch.reduceMotion;
       if (patch.quality && patch.quality !== quality) {
         quality = patch.quality;
-        sampleSeconds = sampleFrames = 0;
+        motionQuality.resetSamples();
         resize();
       }
       terrain.setEnvironment(patch);

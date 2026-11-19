@@ -191,31 +191,53 @@ function buildBorder(court,heightAt,random) {
   }
 }
 
-export function buildCourtyard(group,heightAt,memorial,signal,memorialStone) {
+function addPathLights(court,heightAt) {
+  const stops=[[-38.2,27],[-17,14],[-7.7,1.9],[7.9,-1.8],[15,-12],[26.8,-10.7],[32.6,-3.1]];
+  // Both halves share their placement. The per-vertex mask leaves only the
+  // glass luminous when the existing day/night controller turns the lights up.
+  const parts=[
+    [new THREE.BoxGeometry(.13,.48,.13).translate(0,.24,0),0x887055,0],
+    [new THREE.BoxGeometry(.12,.11,.12).translate(0,.49,0),0xffdb99,1],
+  ];
+  for(const [geo,finish,glow] of parts) {
+    const count=geo.attributes.position.count, tint=new THREE.Color(finish);
+    const colors=new Float32Array(3*count),masks=new Float32Array(count);
+    for(let i=0;i<count;i++)tint.toArray(colors,3*i);
+    geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+    geo.setAttribute('lampGlass',new THREE.BufferAttribute(masks.fill(glow),1));
+  }
+  const shape=mergeGeometries(parts.map(([geo])=>geo));
+  for(const [part] of parts)part.dispose();
+  const material=new THREE.MeshStandardMaterial({vertexColors:true,emissive:0xffce8c});
+  material.onBeforeCompile=shader=>{
+    shader.vertexShader='attribute float lampGlass; varying float isGlass;\n'+shader.vertexShader
+      .replace('#include <begin_vertex>','#include <begin_vertex>\nisGlass=lampGlass;');
+    shader.fragmentShader='varying float isGlass;\n'+shader.fragmentShader
+      .replace('#include <emissivemap_fragment>','totalEmissiveRadiance *= isGlass;')
+      .replace('#include <roughnessmap_fragment>','float roughnessFactor=mix(.92,1.,isGlass);');
+  };
+  material.customProgramCacheKey=()=>'court-path-lamp';
+  const mesh=new THREE.InstancedMesh(shape,material,stops.length),matrix=new THREE.Matrix4();
+  stops.forEach(([x,z],i)=>mesh.setMatrixAt(i,matrix.makeTranslation(x,heightAt(x,z),z)));
+  mesh.name='步道灯火';court.add(mesh);
+}
+
+export function buildCourtyard(group,heightAt,memorial,signal,memorialStone,onChange) {
   const court=new THREE.Group(),random=randomSource(17591),blockers=[];
   court.name='听风山庭';group.add(court);
   buildStonework(court,heightAt,random,blockers,memorialStone?.map || surfaceTexture('memorial-limestone'));
   buildSeat(court,heightAt,random);
-  buildBorder(court,heightAt,random);
+  const border=new THREE.Group(), rimLOD=new THREE.LOD();
+  buildBorder(border,heightAt,random);
+  rimLOD.position.set(29.4,heightAt(29.4,-6.5),-6.5);
+  border.position.copy(rimLOD.position).multiplyScalar(-1);
+  rimLOD.addLevel(border,0);
+  rimLOD.addLevel(new THREE.Group(),44,.08);
+  court.add(rimLOD);
   // Follow the rotated seat with several small obstacles, keeping both ends passable.
   for(const u of [-.83,-.28,.28,.83])blockers.push([seat.x+Math.cos(seat.yaw)*u,
     seat.z-Math.sin(seat.yaw)*u,.33,.34]);
-  const timber=new THREE.MeshStandardMaterial({color:0x887055,roughness:.92});
-  function batch(rows,geometry,material) {
-    const mesh=new THREE.InstancedMesh(geometry,material,rows.length),dummy=new THREE.Object3D();
-    rows.forEach(([x,y,z,w,h,d],i)=>{
-      dummy.position.set(x,y,z);dummy.scale.set(w,h,d);dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix);
-    });
-    court.add(mesh);return mesh;
-  }
-  const lampStops=[[-38.2,27],[-17,14],[-7.7,1.9],[7.9,-1.8],[15,-12],[26.8,-10.7],[32.6,-3.1]];
-  const posts=[], lights=[];
-  for(const [x,z] of lampStops){
-    const y=heightAt(x,z);
-    posts.push([x,y+.24,z,.13,.48,.13]); lights.push([x,y+.49,z,.12,.11,.12]);
-  }
-  batch(posts,new THREE.BoxGeometry(1,1,1),timber);
-  batch(lights,new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0xffdb99,emissive:0xffce8c})).name='步道灯火';
+  addPathLights(court,heightAt);
   const courtId=memorial?.courtyard?.id;
   // The server filters the member list and photo endpoints for this exact viewer.
   if(courtId){
@@ -223,7 +245,8 @@ export function buildCourtyard(group,heightAt,memorial,signal,memorialStone) {
       .then(res=>res.ok?res.json():null).then(data=>{
         if(signal.aborted||data?.courtyard?.id!==courtId||!Array.isArray(data.gardens))return;
         court.name=data.courtyard.name || court.name;
-        addFamilyMarkers(court,heightAt,data.gardens,signal,blockers,memorialStone);
+        addFamilyMarkers(court,heightAt,data.gardens,signal,blockers,memorialStone,onChange);
+        onChange?.();
       }).catch(()=>{});
   }
   return {canWalkAt(x,z){return !blockers.some(([px,pz,rx,rz])=>Math.abs(x-px)<rx+.10&&Math.abs(z-pz)<rz+.10);}};

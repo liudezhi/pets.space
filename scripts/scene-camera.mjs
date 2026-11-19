@@ -1,6 +1,7 @@
 // Loaded only by capture-scenes.py. The regular application build never imports this file.
 import * as THREE from 'three';
 import { startWalk } from '/src/walk.js';
+import { measureRoute } from './scene-benchmark.mjs';
 
 const places = ['stone', 'entrance', 'tree', 'courtyard'];
 const environment = {
@@ -13,48 +14,6 @@ function recordPosition(name, camera) {
     name, position: camera.position.toArray(),
     yaw: camera.rotation.y, pitch: camera.rotation.x, fov: camera.fov,
   };
-}
-
-// Count complete renders. Waiting for the GPU avoids reporting JS command
-// submission rate as delivered frames per second.
-async function sampleFrames(probe, frameCount) {
-  const gl = probe.renderer.getContext();
-  gl.finish();
-  const start = performance.now();
-  for (let index = 0; index < frameCount; index++) {
-    const timestamp = await new Promise(requestAnimationFrame);
-    probe.frame(timestamp);
-    gl.finish();
-  }
-  const elapsed = performance.now() - start;
-  return {
-    frames: frameCount, milliseconds: Math.round(elapsed),
-    fps: Number((1000 * frameCount / elapsed).toFixed(2)),
-    buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
-    triangles: probe.renderer.info.render.triangles,
-  };
-}
-
-async function benchmark(probe, walk) {
-  const staticRender = await sampleFrames(probe, 18);
-  const canvas = probe.renderer.domElement;
-  probe.override = null;
-  walk.goTo('entrance');
-  const initial = probe.camera.position.clone();
-  // Measure actual key input and the automatic moving resolution. Restore the
-  // controls even when the browser loses its render context during the sample.
-  const key = {bubbles: true, cancelable: true, code: 'KeyW', key: 'w'};
-  canvas.dispatchEvent(new KeyboardEvent('keydown', key));
-  try {
-    await sampleFrames(probe, 24);
-    const walking = await sampleFrames(probe, 24);
-    return {
-      lastStaticCamera: staticRender, walking,
-      distanceFromEntrance: Number(probe.camera.position.distanceTo(initial).toFixed(2)),
-    };
-  } finally {
-    canvas.dispatchEvent(new KeyboardEvent('keyup', key));
-  }
 }
 
 export async function photograph({width, height, instant, rig, family}) {
@@ -95,14 +54,21 @@ export async function photograph({width, height, instant, rig, family}) {
   // Advance only explicit frames until the last exposure. This keeps vegetation,
   // water and the automatic moving resolution from drifting between versions.
   const probe = window.cameraProbe;
-  probe.frame(0);
+  let exposureTime = 0;
+  function expose() {
+    const before = probe.renderCount;
+    exposureTime += 1000;
+    probe.frame(exposureTime);
+    if (probe.renderCount === before) throw new Error('The requested exposure did not draw.');
+  }
+  expose();
   const {camera, renderer} = probe;
   const gl = renderer.getContext();
   const debug = gl.getExtension('WEBGL_debug_renderer_info');
   const gpu = gl.getParameter(debug?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER);
   const shots = rig || places.map(name => {
     walk.goTo(name);
-    probe.frame(0);
+    expose();
     return recordPosition(name, camera);
   });
   window.captureFrame = (shot, time) => {
@@ -111,13 +77,17 @@ export async function photograph({width, height, instant, rig, family}) {
     walk.goTo(shot.name);
     probe.override = shot;
     camera.position.fromArray(shot.position);
-    probe.frame(0);
+    expose();
     if (gl.drawingBufferWidth !== width || gl.drawingBufferHeight !== height) {
       throw new Error('Capture must use the full requested drawing-buffer resolution.');
     }
     return renderer.domElement.toDataURL('image/png').split(',')[1];
   };
-  window.benchmarkScene = () => benchmark(probe, walk);
+  window.benchmarkScene = (quality, scenario) => {
+    epoch = Date.parse(instant);
+    walk.setEnvironment(environment);
+    return measureRoute(probe, walk, quality, scenario);
+  };
   window.addEventListener('pagehide', () => {
     Date.now = originalNow;
     walk.dispose();

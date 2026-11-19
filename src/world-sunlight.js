@@ -8,6 +8,10 @@ export function createSunlight(group) {
   key.target.position.set(-6, 2, 2);
   key.castShadow = true;
   shadow.mapSize.set(1536, 1536);
+  // Layer 0 contains ordinary scene casters. Layer 1 holds camera-independent
+  // shadow silhouettes and is absent from the walk camera's default layer mask.
+  const silhouetteLayer = 1;
+  shadow.camera.layers.enable(silhouetteLayer);
   Object.assign(shadow.camera, { left: -54, right: 54, top: 45, bottom: -45, near: 1, far: 225 });
   shadow.camera.updateProjectionMatrix();
   shadow.bias = -0.00018;
@@ -20,10 +24,16 @@ export function createSunlight(group) {
     if (!mesh.isMesh) return;
     const material = mesh.material;
     if (!(material?.isMeshStandardMaterial || material?.isMeshLambertMaterial)) return;
+    if (mesh.userData.sunShadowProxy) {
+      mesh.layers.set(silhouetteLayer);
+      mesh.castShadow = true;
+      if (material.alphaTest > 0 && material.map) cutouts.add(material.map);
+      return;
+    }
     mesh.receiveShadow = true;
     const habitat = mesh.userData.habitat;
     // Fine grass, trail overlays and the ground itself need no silhouette pass.
-    if (['ground', 'trail', 'grass', 'flowers'].includes(habitat) || material.depthWrite === false) return;
+    if (mesh.userData.sunShadow === false || ['ground', 'trail', 'grass', 'flowers'].includes(habitat) || material.depthWrite === false) return;
     mesh.castShadow = true;
     if (material.alphaTest > 0 && material.map) cutouts.add(material.map);
   });

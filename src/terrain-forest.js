@@ -68,6 +68,7 @@ function plantBatch(group, material, instances, role, label, anchored = false) {
   if (role) mesh.userData.habitat = role
   mesh.computeBoundingSphere()
   group.add(mesh)
+  return mesh
 }
 
 function paperBark(random) {
@@ -147,6 +148,7 @@ function woodBatch() {
     const obj=new THREE.Mesh(geo,material)
     obj.name=name
     group.add(obj)
+    return obj
   }
   return {tube,finish}
 }
@@ -208,7 +210,14 @@ function birchStand(group,heightAt,shade) {
   }
   const barkMap=paperBark(random)
   wood.finish(group,new THREE.MeshStandardMaterial({map:barkMap,bumpMap:barkMap,bumpScale:.015,vertexColors:true,roughness:.98}),'入口 · 桦树主干')
-  twigs.finish(group,new THREE.MeshLambertMaterial({vertexColors:true}),'桦树细梢')
+  const fineBranches=new THREE.LOD()
+  fineBranches.position.set(-37.5,heightAt(-37.5,24)+4.5,24)
+  group.add(fineBranches)
+  const tips=twigs.finish(fineBranches,new THREE.MeshLambertMaterial({vertexColors:true}),'桦树细梢')
+  tips.position.copy(fineBranches.position).multiplyScalar(-1)
+  fineBranches.addLevel(tips,0)
+  fineBranches.addLevel(new THREE.Group(),54,.06)
+  tips.userData.sunShadow=false // The stems and leaf sprays carry the birch shadow.
   plantBatch(group,sprayMaterial(plantMap('birch-spray')),leaves,'leaves','桦树叶幕')
 }
 
@@ -251,7 +260,7 @@ function woodland(group,heightAt,riverX,shade) {
       target.push({position:new THREE.Vector3(x,y,z), rotation:[0,a,0],size:[spread*px,h],color:tint})
       if(!conifer) branches.push({position:new THREE.Vector3(x,y,z),rotation:[0,a,0],size:[spread*.98,h*.96],color:tint})
     }
-    if(shadow) shade(x+.19*h,z+h*.08,h*(conifer?.48:.64),h*.42,.67)
+    if(shadow) shade(x+.19*h,z+h*.08,h*(conifer?.48:.64),h*.42,.67,4)
   }
 
   // Rocky higher shoulders sustain conifers. The more open, rounded groves trace
@@ -278,7 +287,8 @@ function woodland(group,heightAt,riverX,shade) {
   for(const [name,entries] of [['conifer',pines],['oak',crowns]]){
     plantBatch(group,new THREE.MeshBasicMaterial({map:plantMap(name),alphaTest:.28,side:THREE.DoubleSide}),entries,name,'谷地林缘 · '+name,true)
   }
-  plantBatch(group,new THREE.MeshLambertMaterial({map:leaflessCrown(),alphaTest:.29,side:THREE.DoubleSide}),branches,null,'谷地林缘 · 落叶乔木冬枝',true)
+  const distantTwigs=plantBatch(group,new THREE.MeshLambertMaterial({map:leaflessCrown(),alphaTest:.29,side:THREE.DoubleSide}),branches,null,'谷地林缘 · 落叶乔木冬枝',true)
+  distantTwigs.userData.sunShadow=false // The grove already has a terrain-conforming contact shadow.
 }
 
 function meadowIslands(group,heightAt,riverX,pathDistance) {
@@ -314,14 +324,15 @@ function meadowIslands(group,heightAt,riverX,pathDistance) {
   }
   // Seasonal density and wind act on the flat sprays, while the photograph keeps
   // individual stalks and seed heads readable within a single draw for each species.
-  plantBatch(group,sprayMaterial(plantMap('meadow-oat'),.15),oat,'leaves','坡缘 · 野燕麦',true)
+  const seedHeads=plantBatch(group,sprayMaterial(plantMap('meadow-oat'),.15),oat,'leaves','坡缘 · 野燕麦',true)
+  seedHeads.userData.sunShadow=false
   plantBatch(group,sprayMaterial(plantMap('meadow-yarrow'),.17),yarrow,'flowers','坡缘 · 蓍草',true)
 }
 
 function shadeBatch(group,heightAt) {
   const pos=[],uv=[],indices=[]
-  function patch(x,z,rx,rz,intensity){
-    const seg=6, start=pos.length/3
+  function patch(x,z,rx,rz,intensity,seg=6){
+    const start=pos.length/3
     for(let j=0;j<=seg;j++) for(let i=0;i<=seg;i++){
       const u=i/seg,v=j/seg,px=x+(u-.5)*rx*2,pz=z+(v-.5)*rz*2
       pos.push(px,heightAt(px,pz)+.021,pz)

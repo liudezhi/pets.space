@@ -24,6 +24,7 @@ export function mountainRanges(group) {
     ridge.userData.habitat = 'ridge';
     ridge.userData.air = haze;
     ridge.userData.forest = map === woodland;
+    ridge.renderOrder = map === woodland ? 3 : 4;
     group.add(ridge);
   }
   return rock;

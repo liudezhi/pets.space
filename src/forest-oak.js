@@ -264,9 +264,14 @@ export function addWishingOak(group, heightAt) {
   group.add(oak)
   const random = oakRandom()
   const wood = woodGeometry()
+  const distantWood = woodGeometry()
   const leaves = []
   const vecs = rows => rows.map(([x, y, z]) => point(x, y, z))
-  const limb = (points, radii, sides) => wood.limb(points, radii, sides, random())
+  const limb = (points, radii, sides) => {
+    const seed = random()
+    wood.limb(points, radii, sides, seed)
+    distantWood.limb(points, radii, radii[0] < .08 ? 3 : 5, seed)
+  }
   const ground = (x, z) => heightAt(x + 20, z - 16) - base
   rootShade(oak, heightAt, base, random)
 
@@ -342,14 +347,40 @@ export function addWishingOak(group, heightAt) {
   }
   const bark = surfaceTexture('oak-bark')
   bark.wrapS = bark.wrapT = THREE.RepeatWrapping
+  const nearWood = new THREE.Group()
   const bole = new THREE.Mesh(scaffoldGeometry(scaffold),scaffoldMaterial(bark))
   bole.name='老橡树 · 连续根脚与分杈'
-  oak.add(bole)
+  nearWood.add(bole)
   const trunk = new THREE.Mesh(wood.finish(), new THREE.MeshStandardMaterial({
     map:bark, color:0xc4af92, bumpMap:bark, bumpScale:.068, vertexColors:true, roughness:.96,
   }))
   trunk.name = '老橡树 · 根与虬枝'
-  oak.add(trunk)
+  nearWood.add(trunk)
+
+  // Retain each branch centreline, including the leafless winter silhouette.
+  // From across the river the sub-decimetre fluting and bark relief on the
+  // sculpted surface disappear; a tapered tube suffices at that distance.
+  scaffold.forEach(({points,radii}, i) => {
+    distantWood.limb(points,radii,radii[0] > .45 ? 9 : 6,(i*.61803)%1)
+  })
+  const distant = new THREE.Mesh(distantWood.finish(),new THREE.MeshLambertMaterial({
+    map:bark,color:0xc4af92,vertexColors:true,
+  }))
+  distant.name = '老橡树 · 远景枝干'
+  const farTree = new THREE.Group()
+  farTree.add(distant)
+  const woodLod = new THREE.LOD()
+  woodLod.addLevel(nearWood,0)
+  woodLod.addLevel(farTree,26,.10)
+  oak.add(woodLod)
+
+  // A single stable silhouette supplies the sun's depth map even if the main
+  // camera crosses the LOD boundary between two cached shadow updates.
+  const shadowWood = new THREE.Mesh(distant.geometry,distant.material)
+  shadowWood.userData.sunShadowProxy = true
+  shadowWood.name = '老橡树 · 枝影'
+  oak.add(shadowWood)
+  for (const part of [bole,trunk,distant]) part.userData.sunShadow = false
 
   // Shuffle positions before assigning indices: a winter/low-detail count then
   // thins the entire crown, leaving the same limbs visible at every distance.
@@ -377,7 +408,24 @@ export function addWishingOak(group, heightAt) {
   })
   crown.userData.habitat = 'leaves'
   crown.computeBoundingSphere()
-  oak.add(crown)
+  nearWood.add(crown)
+  // Across the river the fold in each five-to-ten-leaf spray is subpixel;
+  // preserve its texture, size and position with a flat, two-triangle card.
+  const flatSpray = new THREE.PlaneGeometry(1.34,1)
+  function flatCrown() {
+    const mesh = new THREE.InstancedMesh(flatSpray,crown.material,0)
+    mesh.instanceMatrix = crown.instanceMatrix
+    mesh.instanceColor = crown.instanceColor
+    mesh.count = crown.count
+    mesh.boundingSphere = crown.boundingSphere.clone()
+    mesh.userData.habitat = 'leaves'
+    return mesh
+  }
+  const farCrown = flatCrown(), crownShadow = flatCrown()
+  crown.userData.sunShadow = farCrown.userData.sunShadow = false
+  crownShadow.userData.sunShadowProxy = true
+  farTree.add(farCrown)
+  oak.add(crownShadow)
 
   const ribbonPos = [], ribbonColors = [], ribbonIndex = []
   const anchors = [[-2.22,4.74,5.54,1.05,0xe5cd96],[-2.55,4.80,5.99,.84,0xd1a66f],[-3.91,4.50,1.84,.74,0xb8987d]]
@@ -405,6 +453,7 @@ export function addWishingOak(group, heightAt) {
   cloth.computeVertexNormals()
   const ribbons = new THREE.Mesh(cloth,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:1,emissive:0x30220f}))
   ribbons.userData.habitat='ribbons'
+  ribbons.userData.sunShadow=false
   oak.add(ribbons)
   return oak
 }

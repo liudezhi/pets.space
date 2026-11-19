@@ -56,7 +56,7 @@ async function plaqueTexture(garden, signal) {
   } finally { bitmap.close(); }
 }
 
-export function createNeighborhood({ scene, camera, container, canvas, terrain, arrive, onVisit }) {
+export function createNeighborhood({ scene, camera, container, canvas, terrain, arrive, onVisit, onChange }) {
   const markers = new Map();
   const group = new THREE.Group();
   group.name = '沿路公开纪念园';
@@ -65,6 +65,28 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
   const portrait = new THREE.PlaneGeometry(0.54, 0.58);
   const grain = surfaceTexture('limestone');
   const stoneMaterial = new THREE.MeshStandardMaterial({ map: grain, bumpMap: grain, bumpScale: .023, color: '#ede8da', roughness: .94 });
+  const stones = new THREE.InstancedMesh(stone, stoneMaterial, sites.length);
+  const stoneIds = [];
+  stones.count=0;
+  stones.visible=false;
+  stones.receiveShadow=true;
+  group.add(stones);
+  // Only successfully loaded public entries get an instance. The id list is
+  // rebuilt with the matrices so picking stays correct across withdrawal and paging.
+  function syncStones() {
+    stoneIds.length=0;
+    for (const [id, entry] of markers) {
+      entry.object.updateMatrix();
+      stones.setMatrixAt(stoneIds.length,entry.object.matrix);
+      stoneIds.push(id);
+    }
+    stones.count=stoneIds.length;
+    stones.visible=stones.count>0;
+    stones.instanceMatrix.needsUpdate=true;
+    stones.computeBoundingSphere();
+    onChange?.();
+  }
+
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const listeners = new AbortController();
@@ -99,6 +121,7 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
     marker.photoMaterial.map.dispose();
     marker.photoMaterial.dispose();
     markers.delete(id);
+    syncStones();
   }
 
   function updateEntries() {
@@ -128,11 +151,10 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
     const photoMaterial = new THREE.MeshBasicMaterial({ map: texture, color: '#fdf7e9' });
     const frame = new THREE.Mesh(portrait, photoMaterial);
     frame.position.set(0, 0.60, 0.298);
-    const marker = new THREE.Mesh(stone, stoneMaterial);
-    marker.receiveShadow = true;
-    object.add(marker, frame);
+    object.add(frame);
     group.add(object);
     markers.set(garden.id, { garden, object, photoMaterial, site });
+    syncStones();
   }
 
   async function load(page = currentPage) {
@@ -238,8 +260,9 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
     const rect = canvas.getBoundingClientRect();
     pointer.set((e.clientX - rect.left) / rect.width * 2 - 1, 1 - (e.clientY - rect.top) / rect.height * 2);
     raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObjects(group.children, true);
-    const entry = markers.get(hits[0]?.object.parent?.userData.garden);
+    const [hit] = raycaster.intersectObjects(group.children, true);
+    const id = hit?.object===stones ? stoneIds[hit.instanceId] : hit?.object.parent?.userData.garden;
+    const entry = markers.get(id);
     if (entry === nearest && entry) void open(entry);
     else jump(entry);
   }, listening);
@@ -257,7 +280,7 @@ export function createNeighborhood({ scene, camera, container, canvas, terrain, 
       disposed = true; clearTimeout(timer); request?.abort(); listeners.abort();
       for (const id of markers.keys()) remove(id);
       group.removeFromParent();
-      stone.dispose(); stoneMaterial.dispose(); grain.dispose(); portrait.dispose();
+      stones.dispose(); stone.dispose(); stoneMaterial.dispose(); grain.dispose(); portrait.dispose();
       controls.remove(); visit.remove();
     },
   };

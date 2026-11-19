@@ -4,6 +4,7 @@ import { valleySound } from './world-sound.js';
 import { surfaceTexture } from './world-materials.js';
 import { createSunlight } from './world-sunlight.js';
 import { cloudShader } from './valley-clouds.js';
+import { shadowFilter } from './shadow-filter.js';
 
 function buildSky(group) {
   const cloudAtlas = surfaceTexture('valley-sky');
@@ -31,12 +32,14 @@ function buildSky(group) {
         color+=vec3(.95,.32,.075)*facingSun*dusk*(1.-cover*.8)*.62;
         color+=vec3(1.,.84,.60)*(pow(glow,340.)*.37+smoothstep(.99986,.99997,glow)*2.15)*(1.-cover*.91);
         // Project the illuminated lunar hemisphere onto its visible circular disc.
-        vec3 right=normalize(cross(moon,vec3(0,1,0))), up=cross(right,moon);
-        vec2 xy=vec2(dot(d,right),dot(d,up))/.018;
-        float r2=dot(xy,xy);
-        if(dot(d,moon)>.99 && r2<1.){
-          float light=dot(vec3(xy,sqrt(1.-r2)),vec3(sin(phase),0.,-cos(phase)));
-          color=mix(color,vec3(.78,.84,.94),smoothstep(-.05,.05,light)*(1.-smoothstep(.87,1.,r2)));
+        if(dot(d,moon)>.99){
+          vec3 right=normalize(cross(moon,vec3(0,1,0))), up=cross(right,moon);
+          vec2 xy=vec2(dot(d,right),dot(d,up))/.018;
+          float r2=dot(xy,xy);
+          if(r2<1.){
+            float light=dot(vec3(xy,sqrt(1.-r2)),vec3(sin(phase),0.,-cos(phase)));
+            color=mix(color,vec3(.78,.84,.94),smoothstep(-.05,.05,light)*(1.-smoothstep(.87,1.,r2)));
+          }
         }
         color=skyWithClouds(color,d,sun,zenith,cloud,cover,day,clock,cloudAtlas);
         color+=vec3(.28,.34,.44)*flash;
@@ -44,7 +47,8 @@ function buildSky(group) {
         #include <colorspace_fragment>
       }`,
   }));
-  sky.renderOrder = -4;
+  // Draw the sky into the gaps left by opaque scenery so obscured pixels skip the cloud shader.
+  sky.renderOrder = 5;
   group.add(sky);
 
   const starPoints=[];
@@ -136,8 +140,10 @@ function seasonalMaterials(group) {
       shader.fragmentShader='varying vec3 envPos; uniform vec3 seasonTint,airTone; uniform float snowAmount,airAmount;\n'+shader.fragmentShader;
       const snowFactor=(role==='ground'||role==='trail')?'(.55+.35*sin(envPos.x*.49+envPos.z*.53)*cos(envPos.z*.43))':
         (role==='stone')?'smoothstep(.62,.94,normalize(cross(dFdx(envPos),dFdy(envPos))).y)':'0.';
+      const snowShading = snowFactor === '0.' ? '' :
+        'if (snowAmount > 0.) diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.87,.90,.92),clamp(snowAmount*'+snowFactor+',0.,1.));';
       shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\n'+
-        (vegetation?'diffuseColor.rgb*=seasonTint;':'')+'diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.87,.90,.92),clamp(snowAmount*'+snowFactor+',0.,1.));');
+        (vegetation?'diffuseColor.rgb*=seasonTint;':'')+snowShading);
       if(role==='ridge'){
         shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\n'+
           'float ridgeSnow=smoothstep(.40,.92,vMapUv.y)*smoothstep(.08,.46,max(sampledDiffuseColor.r,sampledDiffuseColor.g));'+
@@ -197,6 +203,7 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
   const sunlight = createSunlight(group);
   const { fill: hemi, key: directional } = sunlight;
   const sound=valleySound(), seasons=seasonalMaterials(group);
+  const wideShadows = shadowFilter(group);
   scene.fog=new THREE.FogExp2('#c1cfc8',.008);
   const ridges=[], grasses=[], lamps=[];
   group.traverse(o=>{ if(o.name==='步道灯火') lamps.push(o); if(o.name==='远山') ridges.push(o); if(o.userData.habitat==='grass') grasses.push(o); });
@@ -249,7 +256,10 @@ export function atmosphere(scene, group, water, prefs, reducedMotion) {
   }
   refresh();
   return {
-    setDetail: seasons.setDetail,
+    setDetail(value) {
+      wideShadows.value = value >= 1;
+      seasons.setDetail(value);
+    },
     configure(patch) { prefsNow={...prefsNow,...patch};refresh(); },
     tick(time, camera, riverDistance){
       lastDistance=riverDistance;

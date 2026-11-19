@@ -3,6 +3,7 @@ import { surfaceTexture } from './world-materials.js'
 import { distantRidge } from './valley-horizon.js'
 import { addRiverSedges } from './river-sedges.js'
 import { cloudShader } from './valley-clouds.js'
+import { createGridMesh, gridDetailLevel } from './terrain-grid.js'
 
 const { sin, cos, abs, exp, PI } = Math
 const smooth = THREE.MathUtils.smoothstep
@@ -23,8 +24,7 @@ export function riverWidth(z) {
   return 3.60 + 1.35*smooth(abs(z),4,24) + .46*sin(z*.11) + 2.35*cove(z) + edge*smooth(abs(z),2,7)
 }
 
-export function riverbedHeight(x,z) {
-  const width=riverWidth(z), u=(x-riverX(z))/width
+export function riverbedHeight(x,z,u=(x-riverX(z))/riverWidth(z)) {
   const thalweg=.20*sin(z*.102+.55)
   const bowl=Math.max(0,1-u*u)
   const scour=.87+.44*exp(-((u-thalweg)**2)/.19)
@@ -53,7 +53,7 @@ function riverbed(group, ground, stone) {
       const u=band[j], side=Math.sign(u)
       const offset=abs(u)>1 ? side*(width+(abs(u)-1)*(2.35+.25*sin(z*.56))/.54) : u*width
       const x=center+offset
-      vertices.push(x,ground(x,z)+.043,z);uv.push(.76*x+.22*z,.76*z-.22*x)
+      vertices.push(x,ground(x,z,center,width)+.043,z);uv.push(.76*x+.22*z,.76*z-.22*x)
       const shade=tints[j]*(.91+.06*sin(x*.37+z*.29)+.05*cos(z*.88))
       const excess=abs(offset)-width, weedy=.5+.36*cos(z*.71+side*2.2)+.13*sin(z*2.59)
       const alpha=1-smooth(excess,.53+.36*weedy,1.53+.55*weedy)
@@ -70,16 +70,19 @@ function riverbed(group, ground, stone) {
   geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
   geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,4))
   geo.setIndex(indices);geo.computeVertexNormals()
-  const bed=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({
-    map:stone,roughness:.77,vertexColors:true,side:THREE.DoubleSide,transparent:true,depthWrite:false
-  }))
+  // The heightfield always faces up. The visitor remains above it everywhere.
+  const material=new THREE.MeshStandardMaterial({map:stone,roughness:.77,vertexColors:true,transparent:true,depthWrite:false})
+  const {mesh:bed,setDetail}=createGridMesh(geo,material,{
+    rows:rings,cols:count-1,mediumColumns:[0,1,2,3,4,6,8,9,10,11,12],lowColumns:[0,1,2,3,6,9,10,11,12]
+  })
   bed.name='圆砾河床与退水线';bed.renderOrder=1;bed.receiveShadow=true;group.add(bed)
+  return setDetail
 }
 
 // A periodic wave-slope atlas. Independent moving lookups keep the ripples irregular
 // without a second scene render, GPU readbacks, or a live environment texture.
-function waterSlopes() {
-  const random=seeded(57451),size=128,bytes=new Uint8Array(size*size*4)
+function wavePixels(size) {
+  const random=seeded(57451),bytes=new Uint8Array(size*size*4)
   const waves=Array.from({length:20},(_,i)=>({
     x:(random()<.5?-1:1)*(1+Math.floor(random()*9)),
     z:2+Math.floor(random()*16), phase:random()*2*PI, amplitude:1/Math.sqrt(i+1)
@@ -96,39 +99,44 @@ function waterSlopes() {
     bytes[j]=128+95*Math.tanh(nx*.66);bytes[j+1]=128+102*Math.tanh(nz*.58)
     bytes[j+2]=128;bytes[j+3]=255
   }
-  const map=new THREE.DataTexture(bytes,size,size)
+  return bytes
+}
+
+// Re-entering the valley reuses its immutable 64 KiB wave field. Each renderer
+// still owns a separate, disposable texture and its own GPU upload.
+let cachedWavePixels
+function waterSlopes() {
+  const size=128
+  cachedWavePixels ??= wavePixels(size)
+  const map=new THREE.DataTexture(cachedWavePixels,size,size)
   map.wrapS=map.wrapT=THREE.RepeatWrapping;map.generateMipmaps=true
   map.magFilter=THREE.LinearFilter;map.minFilter=THREE.LinearMipmapLinearFilter;map.needsUpdate=true
   return map
 }
 
 function addWater(group, ground, mountains, stone) {
-  const positions=[],depths=[],bands=[],indices=[]
+  const positions=[],depths=[],bands=[]
   const samples=260,columns=13
   for(let i=0;i<=samples;i++){
-    const z=-96+192*i/samples,center=riverX(z),w=riverWidth(z)+.22
+    const z=-96+192*i/samples,center=riverX(z),width=riverWidth(z),w=width+.22
     for(let j=0;j<columns;j++){
       const u=j/(columns-1)*2-1, x=center+w*u
-      positions.push(x,0,z);bands.push(u);depths.push(Math.max(.025,-ground(x,z)))
-      if(i&&j){
-        const d=i*columns+j
-        indices.push(d-columns-1,d-1,d,d-columns-1,d,d-columns)
-      }
+      positions.push(x,0,z);bands.push(u);depths.push(Math.max(.025,-ground(x,z,center,width)))
     }
   }
   const geo=new THREE.BufferGeometry()
   geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
   geo.setAttribute('bottomDepth',new THREE.Float32BufferAttribute(depths,1))
   geo.setAttribute('bank',new THREE.Float32BufferAttribute(bands,1))
-  geo.setIndex(indices)
   const uniforms={
+    riverDetail:{value:0},
     time:{value:0},wet:{value:0},tone:{value:1},cloud:{value:.2},
     sun:{value:new THREE.Vector3(-1,.7,-.25).normalize()},
     horizon:{value:new THREE.Color('#d6e0df')},zenith:{value:new THREE.Color('#6893af')},
     cloudAtlas:{value:null},cloudTint:{value:new THREE.Color('#f0f4f2')},
     slopes:{value:waterSlopes()},ridges:{value:mountains},gravel:{value:stone}
   }
-  const surface=new THREE.Mesh(geo,new THREE.ShaderMaterial({
+  const material=new THREE.ShaderMaterial({
     uniforms,transparent:true,depthWrite:false,
     vertexShader:`
       attribute float bottomDepth,bank;
@@ -138,27 +146,39 @@ function addWater(group, ground, mountains, stone) {
     fragmentShader:`
       uniform sampler2D slopes,ridges,gravel,cloudAtlas;
       uniform vec3 cloudTint;
+      uniform int riverDetail;
       const float ridgeRadius=${distantRidge.radius.toFixed(3)}, ridgeHeight=${distantRidge.height.toFixed(3)}, ridgeBase=${distantRidge.bottom.toFixed(3)};
       const float ridgeYaw=${distantRidge.yaw.toFixed(3)}, ridgeRepeats=${distantRidge.repeats.toFixed(3)};
       uniform float time,wet,tone,cloud;uniform vec3 sun,horizon,zenith;
       varying vec3 point;varying float depth,edge;
       const float TAU=6.2831853;
       ${cloudShader}
-      vec3 reflectedBank(vec3 ray){
+      vec3 reflectedSky(vec3 ray){
         vec3 sky=mix(horizon,zenith,pow(clamp(ray.y,0.,1.),.57));
-        float day=smoothstep(-.15,.13,sun.y);
         float facing=pow(max(dot(ray,sun),0.),6.),dusk=1.-smoothstep(.0,.39,abs(sun.y));
         sky+=vec3(.95,.32,.075)*facing*dusk*(1.-cloud*.8)*.62;
-        sky=skyWithClouds(sky,ray,sun,zenith,cloudTint,cloud,day,time,cloudAtlas);
+        if(riverDetail==0){
+          return skyWithClouds(sky,ray,sun,zenith,cloudTint,cloud,smoothstep(-.15,.13,sun.y),time,cloudAtlas);
+        }
+        // Mean cloud illumination between the pale horizon and the storm ceiling.
+        return mix(sky,cloudTint*.78,.08+cloud*.23);
+      }
+      vec3 reflectedRidge(vec3 sky,vec3 ray,float daylight){
+        if(riverDetail==2){
+          // A soft wooded bank at grazing angles without fetching the mountain atlas.
+          vec3 lowBank=mix(horizon*.21,vec3(.073,.10,.081)+horizon*.19,daylight);
+          return mix(lowBank,sky,smoothstep(-.015,.21,ray.y));
+        }
         float a=max(.01,dot(ray.xz,ray.xz)), b=dot(point.xz,ray.xz);
         float distanceToRidge=(-b+sqrt(max(0.,b*b-a*(dot(point.xz,point.xz)-ridgeRadius*ridgeRadius))))/a;
         vec3 hit=point+ray*distanceToRidge;
         vec2 uv=vec2(fract((atan(hit.x,hit.z)-ridgeYaw)/TAU)*ridgeRepeats,(hit.y-ridgeBase)/ridgeHeight);
         vec4 ridge=texture2D(ridges,uv);
-        float daylight=smoothstep(-.12,.25,sun.y);
         float veil=.24+cloud*.22;
         vec3 forest=mix(ridge.rgb*(.12+.88*daylight),horizon,veil);
-        vec3 env=mix(sky,forest,ridge.a*(1.-smoothstep(.93,1.02,uv.y)));
+        return mix(sky,forest,ridge.a*(1.-smoothstep(.93,1.02,uv.y)));
+      }
+      vec3 reflectBridge(vec3 env,vec3 ray,float daylight){
         // The same stone arch shades and reflects into the pool on either side.
         float side=sign(point.z),wallZ=side*1.56;
         if(abs(ray.z)>.001 && abs(point.z)>1.56){
@@ -178,12 +198,14 @@ function addWater(group, ground, mountains, stone) {
         float twist=sin(point.z*.21+point.x*.14);
         vec2 flow=vec2(.15+.34*twist,1.);
         vec2 p=point.xz;
-        vec2 warp=texture2D(slopes,p*.047-flow*t*.009).rg-.5;
+        vec2 warp=vec2(0.);
+        if(riverDetail==0) warp=texture2D(slopes,p*.047-flow*t*.009).rg-.5;
         vec2 a=texture2D(slopes,p*.146-flow*t*.030+warp*.083).rg-.5;
-        vec2 b=texture2D(slopes,mat2(.84,.54,-.54,.84)*p*.32-vec2(.02,.047)*t+warp*.065).rg-.5;
+        vec2 b=vec2(0.);
+        if(riverDetail<2) b=texture2D(slopes,mat2(.84,.54,-.54,.84)*p*.32-vec2(.02,.047)*t+warp*.065).rg-.5;
         float energy=.65+.63*smoothstep(.2,.93,abs(edge))+.16*wet;
         vec2 tilt=(a*.36+b*.14)*energy;
-        tilt+=wet*.027*vec2(cos(length(fract(p*2.)-.5)*36.-t*8.),sin(p.x*7.+p.y*9.-t*7.));
+        if(wet>0.) tilt+=wet*.027*vec2(cos(length(fract(p*2.)-.5)*36.-t*8.),sin(p.x*7.+p.y*9.-t*7.));
         vec3 normal=normalize(vec3(tilt.x,1.,tilt.y));
         vec3 ray=reflect(-view,normal);
         ray.y=max(-.18,ray.y);
@@ -192,14 +214,22 @@ function addWater(group, ground, mountains, stone) {
         float transmission=exp(-distanceInWater*.67);
         float sunlight=smoothstep(-.12,.30,sun.y);
         vec3 scatter=mix(vec3(.012,.062,.053),vec3(.043,.16,.134),.30+.70*transmission)*(.17+.83*sunlight);
-        vec3 bed=texture2D(gravel,vec2(.76*p.x+.22*p.y,.76*p.y-.22*p.x)+tilt*depth*.52).rgb;
-        float caustic=pow(clamp(1.-abs(a.x+b.y)*3.7,0.,1.),5.)*.15*sunlight;
-        vec3 refracted=bed*vec3(.61,.78,.66)*(.18+.82*sunlight)*(1.+caustic);
-        float passThrough=transmission*(1.-fres)*.64;
         vec2 underDeck=point.xz+sun.xz*(1.8/max(.04,sun.y));
         float shade=(1.-smoothstep(6.28,6.6,abs(underDeck.x)))*(1.-smoothstep(1.43,1.79,abs(underDeck.y)))*sunlight;
-        refracted*=1.-shade*.39;
-        vec3 energyColor=reflectedBank(ray)*fres+scatter*(1.-transmission)*(1.-fres)+refracted*transmission*(1.-fres)*.36;
+        float daylight=smoothstep(-.12,.25,sun.y);
+        vec3 environment=reflectBridge(reflectedRidge(reflectedSky(ray),ray,daylight),ray,daylight);
+        vec3 energyColor=environment*fres+scatter*(1.-transmission)*(1.-fres);
+        // The lit pebbles and boulders are already in the framebuffer. At low detail
+        // send more light through to that geometry instead of resampling its albedo.
+        float passThrough=transmission*(1.-fres)*(.84-.12*shade);
+        if(riverDetail<2){
+          vec3 bed=texture2D(gravel,vec2(.76*p.x+.22*p.y,.76*p.y-.22*p.x)+tilt*depth*.52).rgb;
+          float caustic=pow(clamp(1.-abs(a.x+b.y)*3.7,0.,1.),5.)*.15*sunlight;
+          vec3 refracted=bed*vec3(.61,.78,.66)*(.18+.82*sunlight)*(1.+caustic);
+          refracted*=1.-shade*.39;
+          energyColor+=refracted*transmission*(1.-fres)*.36;
+          passThrough=transmission*(1.-fres)*.64;
+        }
         vec3 halfVector=normalize(sun+view);
         float sparkle=pow(max(dot(halfVector,normal),0.),260.)*.80+pow(max(dot(halfVector,normal),0.),52.)*.08;
         energyColor+=vec3(1.,.80,.49)*sparkle*smoothstep(-.03,.08,sun.y)*(1.-.7*cloud)*(1.-shade);
@@ -207,9 +237,12 @@ function addWater(group, ground, mountains, stone) {
         gl_FragColor=vec4(energyColor/max(opacity,.001),opacity);
         #include <colorspace_fragment>
       }`
-  }))
+  })
+  const {mesh:surface,setDetail}=createGridMesh(geo,material,{
+    rows:samples,cols:columns-1,mediumColumns:[0,2,4,6,8,10,12],lowColumns:[0,3,6,9,12]
+  })
   surface.name='河湾动水';surface.renderOrder=2;group.add(surface)
-  return uniforms
+  return {uniforms,setDetail}
 }
 
 function channelRocks(group, ground) {
@@ -323,10 +356,14 @@ function addRockWakes(group, water) {
 
 export function addRiver(group,ground,mountains) {
   const stone=surfaceTexture('riverbed')
-  riverbed(group,ground,stone)
+  const setBedDetail=riverbed(group,ground,stone)
   channelRocks(group,ground)
   addRiverSedges(group,ground,riverX,riverWidth)
   const water=addWater(group,ground,mountains,stone)
-  addRockWakes(group,water)
-  return water
+  addRockWakes(group,water.uniforms)
+  return {uniforms:water.uniforms, setDetail(value) {
+    water.uniforms.riverDetail.value=gridDetailLevel(value)
+    water.setDetail(value)
+    setBedDetail(value)
+  }}
 }

@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { surfaceTexture } from './world-materials.js'
 import { addRiver, riverX, riverWidth, riverbedHeight } from './terrain-river.js'
 import { addBridge } from './terrain-bridge.js'
+import { createGridMesh } from './terrain-grid.js'
 import { atmosphere } from './world-atmosphere.js'
 import { mountainRanges } from './valley-horizon.js'
 import { buildCourtyard } from './world-courtyard.js'
@@ -31,15 +32,15 @@ function bridgeDeck(x) {
   return 2.1 - 0.95 * pow(x / BRIDGE_END, 2)
 }
 
-function ground(x, z) {
-  const side = x - riverX(z)
-  const bank = abs(side) - riverWidth(z)
+function ground(x, z, center = riverX(z), width = riverWidth(z)) {
+  const side = x - center
+  const bank = abs(side) - width
   const lift = side < 0 ? 6.7 : 4.35
   const rise = smooth(3, side < 0 ? 40 : 24, bank)
   const relief = 1.15*sin(z*.073+x*.067) + .62*cos(x*.14-z*.087) + .19*sin(z*.35+x*.19)
   const rolling = smooth(8, 26, bank)*relief + smooth(30,61,bank)*2.8*cos(x*.08+z*.063)
   const approach = exp(-.14*z*z)*(1-smooth(.4,5,abs(abs(x)-BRIDGE_END)))
-  const terrace = bank < 0 ? riverbedHeight(x,z) : -.035+1.09*smooth(-.35,3.18,bank)
+  const terrace = bank < 0 ? riverbedHeight(x,z,side/width) : -.035+1.09*smooth(-.35,3.18,bank)
   const terrain = terrace + rise*lift + rolling
   return mix(terrain, bridgeDeck(clamp(x, -BRIDGE_END, BRIDGE_END)), approach)
 }
@@ -90,10 +91,11 @@ function buildGround(group) {
   for(const side of [-1,1]){
     const start=positions.length/3
     for(let row=0;row<=rows;row++){
-      const z=-96+row*192/rows, center=riverX(z), rail=center+side*(riverWidth(z)+.50)
+      const z=-96+row*192/rows, center=riverX(z), waterWidth=riverWidth(z)
+      const rail=center+side*(waterWidth+.50)
       for(let col=0;col<=cols;col++){
         const t=col/cols, x=mix(rail,side*width, .48*t+.52*t*t)
-        positions.push(x,ground(x,z)-.015,z)
+        positions.push(x,ground(x,z,center,waterWidth)-.015,z)
         uv.push(x/WORLD+.5,z/WORLD+.5)
         const patch=.48+.26*sin(.15*x+.22*z)+.16*cos(.32*z-.11*x)+.08*sin(1.13*z+x*.79)
         tint.copy(lo).lerp(high, smooth(.08,.91,patch))
@@ -112,8 +114,26 @@ function buildGround(group) {
   geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
   geo.setIndex(faces);geo.computeVertexNormals()
   const mat=new THREE.MeshStandardMaterial({map:surfaceTexture('meadow',125),vertexColors:true,roughness:.94})
-  const land=mesh(group,geo,mat)
-  land.userData.habitat='ground';land.receiveShadow=true
+  // Retain the narrow bank's first metres at every detail level. The broader
+  // terraces change slope gradually, so they tolerate coarser sampling.
+  const columns=Array.from({length:cols+1},(_,i)=>i)
+  const mediumColumns=columns.filter(i=>i<=8 || i%2===0)
+  const lowColumns=columns.filter(i=>i<=4 || (i<=24 && i%2===0) || i%4===0)
+  const sections=[]
+  for(const [bank,side] of [-1,1].entries()){
+    const offset=bank*(rows+1)*(cols+1)
+    for(const firstCol of [0,cols/2]){
+      const section=createGridMesh(geo,mat,{
+        rows,cols,offset,firstCol,lastCol:firstCol+cols/2,
+        reverse:side<0,mediumColumns,lowColumns,
+      })
+      section.mesh.userData.habitat='ground'
+      section.mesh.receiveShadow=true
+      group.add(section.mesh)
+      sections.push(section)
+    }
+  }
+  return value=>sections.forEach(section=>section.setDetail(value))
 }
 
 function trailGeometry(group) {
@@ -150,7 +170,26 @@ function trailGeometry(group) {
 }
 
 function scatterMeadow(group, random, birchPlot) {
-  const positions=[], colors=[], uv=[], normals=[]
+  // Keep the original ground coordinates for wind and seasonal shaders. The
+  // LOD origin is the centre of its patch; its content transform cancels this
+  // offset. Seasonal draw ranges remain independent for each visible patch.
+  const patches=new Map(), patchSize=24
+  function patchAt(x,z) {
+    const col=Math.floor(x/patchSize), row=Math.floor(z/patchSize), key=col+':'+row
+    if (!patches.has(key)) {
+      const cx=(col+.5)*patchSize, cz=(row+.5)*patchSize
+      const lod=new THREE.LOD(), content=new THREE.Group()
+      lod.position.set(cx,ground(cx,cz),cz)
+      content.position.copy(lod.position).multiplyScalar(-1)
+      lod.addLevel(content,0)
+      // At 46 m even the closest edge of a 24 m patch is over 29 m
+      // away. The terrain texture carries the distant sward continuously.
+      lod.addLevel(new THREE.Group(),46,.06)
+      group.add(lod)
+      patches.set(key,{content,positions:[],colors:[],uv:[],normals:[]})
+    }
+    return patches.get(key)
+  }
   const rootTint=new THREE.Color('#c4c5a9'), seedTint=new THREE.Color('#ced4bd')
   const dummy = new THREE.Object3D()
   const rocks=[], blossoms=[]
@@ -172,6 +211,7 @@ function scatterMeadow(group, random, birchPlot) {
     const light=.75+random()*.33
     const b=rootTint.clone().multiplyScalar(light), tip=seedTint.clone().multiplyScalar(light)
     const bend=.05+random()*.14
+    const {positions,colors,uv,normals}=patchAt(x,z)
     for(let j=0;j<(patch>.54?3:2);j++){
       const axis=angle+j*(1.14+random()*.42), wx=cos(axis)*width*1.16, wz=sin(axis)*width*1.16
       const px=x+cos(axis)*.027, pz=z+sin(axis)*.027
@@ -185,25 +225,30 @@ function scatterMeadow(group, random, birchPlot) {
       blossoms.push([x,y+tall*.67,z,.012+random()*.017,random()<.78?'#e1d9af':'#bea66d'])
     }
   }
-  const meadow=new THREE.BufferGeometry()
-  meadow.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
-  meadow.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
-  meadow.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
-  meadow.setAttribute('normal',new THREE.Float32BufferAttribute(normals,3))
   const grasses=surfaceTexture('meadow-fescue')
   grasses.wrapS=grasses.wrapT=THREE.ClampToEdgeWrapping
-  const grass=mesh(group,meadow,new THREE.MeshLambertMaterial({
+  const grassMaterial=new THREE.MeshLambertMaterial({
     map:grasses,vertexColors:true,side:THREE.DoubleSide,alphaTest:.11,alphaToCoverage:true
-  }))
+  })
   // Both sides represent the same cluster of narrow leaves. Keep their shared
   // upward-facing normal so the reverse side receives the same skylight.
-  grass.material.onBeforeCompile=shader=>{
+  grassMaterial.onBeforeCompile=shader=>{
     shader.fragmentShader=shader.fragmentShader.replace('#include <normal_fragment_begin>',
       '#include <normal_fragment_begin>\nnormal *= faceDirection;')
   }
-  grass.material.customProgramCacheKey=()=> 'meadow-transmission'
-  grass.name='冷季草甸'
-  grass.userData.habitat='grass'
+  grassMaterial.customProgramCacheKey=()=> 'meadow-transmission'
+  for(const {content,positions,colors,uv,normals} of patches.values()) {
+    const meadow=new THREE.BufferGeometry()
+    meadow.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
+    meadow.setAttribute('color',new THREE.Float32BufferAttribute(colors,3))
+    meadow.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2))
+    meadow.setAttribute('normal',new THREE.Float32BufferAttribute(normals,3))
+    meadow.computeBoundingSphere()
+    meadow.boundingSphere.radius+=.26 // Seasonal wind can move the blade tips.
+    const grass=mesh(content,meadow,grassMaterial)
+    grass.name='冷季草甸'
+    grass.userData.habitat='grass'
+  }
 
   for(let i=0;i<1000;i++) {
     const route=trail.getPointAt(random())
@@ -211,47 +256,88 @@ function scatterMeadow(group, random, birchPlot) {
     if(abs(x)<BRIDGE_END+.8 && abs(z)<2) continue
     rocks.push([x,ground(x,z)+.066,z,random()*.052+.012,'#b8ad93'])
   }
-  function scatter(items, geom, floral) {
-    const object=new THREE.InstancedMesh(geom,new THREE.MeshStandardMaterial({roughness:1,flatShading:true}),items.length)
-    items.forEach(([x,y,z,s,c],i)=>{
+  const pebble=new THREE.IcosahedronGeometry(1,0)
+  const distantPebble=new THREE.OctahedronGeometry(1,0)
+  function scatter(items, floral) {
+    const material=new THREE.MeshStandardMaterial({roughness:1,flatShading:true})
+    const stretches=new Map()
+    for(const [x,y,z,s,c] of items) {
       dummy.position.set(x,y,z)
       dummy.scale.set(s*(.9+random()),s*(floral?.65:.5),s*(.8+random()*.7))
       dummy.rotation.set(random()*.25,random()*PI,random()*.25)
       dummy.updateMatrix()
-      object.setMatrixAt(i,dummy.matrix)
-      object.setColorAt(i,new THREE.Color(c))
-    })
-    if (floral) object.userData.habitat='flowers'
-    group.add(object)
+      // The trail is monotonic in x. Four short stretches suffice for these
+      // sub-decimetre stones; the much sparser blossoms fit in one draw.
+      const stretch=floral?0:Math.floor((x+56)/21)
+      if(!stretches.has(stretch)) stretches.set(stretch,[])
+      stretches.get(stretch).push([dummy.matrix.clone(),new THREE.Color(c)])
+    }
+    for(const entries of stretches.values()) {
+      const object=new THREE.InstancedMesh(pebble,material,entries.length)
+      entries.forEach(([matrix,color],i)=>{
+        object.setMatrixAt(i,matrix)
+        object.setColorAt(i,color)
+      })
+      object.computeBoundingSphere()
+      object.userData.sunShadow=false
+      if(floral) {
+        object.userData.habitat='flowers'
+        group.add(object)
+        continue
+      }
+      const lod=new THREE.LOD()
+      lod.position.copy(object.boundingSphere.center)
+      object.position.copy(lod.position).multiplyScalar(-1)
+      const distant=new THREE.InstancedMesh(distantPebble,material,0)
+      distant.instanceMatrix=object.instanceMatrix
+      distant.instanceColor=object.instanceColor
+      distant.count=object.count
+      distant.boundingSphere=object.boundingSphere.clone()
+      distant.position.copy(object.position)
+      distant.userData.sunShadow=false
+      const radius=object.boundingSphere.radius
+      lod.addLevel(object,0)
+      lod.addLevel(distant,radius+11,.10)
+      lod.addLevel(new THREE.Group(),radius+38,.06)
+      group.add(lod)
+    }
   }
-  scatter(rocks,new THREE.IcosahedronGeometry(1,0),false)
-  scatter(blossoms,new THREE.IcosahedronGeometry(1,0),true)
+  scatter(rocks,false)
+  scatter(blossoms,true)
 }
 
-export function buildTerrain(scene, memorial, prefs = {}, reducedMotion) {
+export function buildTerrain(scene, memorial, prefs = {}, reducedMotion, onChange) {
   const group=new THREE.Group()
   group.name='Riverbend valley'
   const previousFog=scene.fog
   scene.add(group)
   const random=randomSource(746)
   const ridgeTexture=mountainRanges(group)
-  buildGround(group)
+  const setGroundDetail=buildGround(group)
   trailGeometry(group)
-  const water=addRiver(group,ground,ridgeTexture)
+  const river=addRiver(group,ground,ridgeTexture)
   addBridge(group)
   const birchPlot = memorial?.place === 'entrance' ? memorialPlots.entrance : null
   scatterMeadow(group,random,birchPlot)
   addForest(group,heightAt,riverX,pathDistance)
   const portraitRequests = new AbortController()
-  const memorialStone=addMemorial(group,heightAt,memorial,portraitRequests.signal)
-  const grounds = buildCourtyard(group,heightAt,memorial,portraitRequests.signal,memorialStone)
-  const climate = atmosphere(scene,group,water,prefs,reducedMotion)
+  const memorialStone=addMemorial(group,heightAt,memorial,portraitRequests.signal,onChange)
+  const grounds = buildCourtyard(group,heightAt,memorial,portraitRequests.signal,memorialStone,onChange)
+  // The built landscape has fixed transforms. Wind and water animate in shaders,
+  // while the sky and lights added below continue to update their own transforms.
+  group.updateMatrixWorld(true)
+  group.traverse(object => { object.matrixAutoUpdate = false })
+  const climate = atmosphere(scene,group,river.uniforms,prefs,reducedMotion)
   let disposed=false
   return {
     heightAt,
     canWalkAt: (x, z) => canWalkAt(x, z, birchPlot) && grounds.canWalkAt(x,z),
     setEnvironment: climate.configure,
-    setDetail: climate.setDetail,
+    setDetail(value) {
+      setGroundDetail(value)
+      river.setDetail(value)
+      climate.setDetail(value)
+    },
     visibility: climate.visibility,
     update(elapsed, camera) { climate.tick(elapsed,camera, camera ? Math.abs(camera.position.x - riverX(camera.position.z)) : 12) },
     dispose() {

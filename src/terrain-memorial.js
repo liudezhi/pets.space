@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { surfaceTexture } from './world-materials.js';
 
 export const memorialPlots = {
@@ -113,7 +114,7 @@ function stoneGeometry(detail = 1) {
   return geometry;
 }
 
-function roundedRim(width, height, band, depth, bevel, material) {
+function roundedRim(width, height, band, depth, bevel) {
   function trace(path, w, h, radius) {
     const x = w/2, y = h/2, r = radius;
     path.moveTo(-x+r, -y);
@@ -129,7 +130,50 @@ function roundedRim(width, height, band, depth, bevel, material) {
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth, bevelEnabled: true, bevelSegments: 2, bevelSize: bevel, bevelThickness: bevel, curveSegments: 3,
   });
-  return new THREE.Mesh(geometry, material);
+  return geometry;
+}
+
+function portraitGeometry() {
+  const {x,y,width:w,height:h} = frameSite;
+  const face = new THREE.PlaneGeometry(w,h).toNonIndexed();
+  const parts = [
+    [roundedRim(w+.113,h+.113,.044,.039,.007),.35,0x786c58,.89,0],
+    [roundedRim(w+.077,h+.077,.041,.034,.008),.38,0xe3d4b6,.55,0],
+    [face,.395,0xffffff,.86,1],
+  ];
+  for (const [geo,z,finish,roughness,isPrint] of parts) {
+    geo.translate(x,y,z);
+    const count = geo.attributes.position.count, tint = new THREE.Color(finish);
+    const colors = new Float32Array(count*3), coating = new Float32Array(count*2);
+    for (let i=0;i<count;i++) {
+      tint.toArray(colors,3*i);
+      coating[2*i]=roughness;coating[2*i+1]=isPrint;
+    }
+    geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+    geo.setAttribute('coating',new THREE.BufferAttribute(coating,2));
+  }
+  const geometry=mergeGeometries(parts.map(([geo])=>geo));
+  for(const [part] of parts)part.dispose();
+  return geometry;
+}
+
+function portraitMaterial(photo) {
+  // Render the mount and print together. Its two ceramic glazes retain their
+  // individual roughness and only the photograph samples the personal texture.
+  const mat = new THREE.MeshStandardMaterial({map:photo,vertexColors:true,emissive:0xffffff,emissiveIntensity:.13});
+  mat.onBeforeCompile = shader=>{
+    shader.vertexShader='attribute vec2 coating; varying vec2 printCoating;\n'+shader.vertexShader
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nprintCoating=coating;');
+    shader.fragmentShader='varying vec2 printCoating;\n'+shader.fragmentShader
+      .replace('#include <map_fragment>', `
+        vec4 printColor = texture2D(map,vMapUv);
+        diffuseColor *= mix(vec4(1.),printColor,printCoating.y);
+      `)
+      .replace('#include <roughnessmap_fragment>','float roughnessFactor=printCoating.x;')
+      .replace('#include <emissivemap_fragment>','totalEmissiveRadiance *= printColor.rgb * printCoating.y;');
+  };
+  mat.customProgramCacheKey=()=>'memorial-framed-print';
+  return mat;
 }
 
 function addContactShadow(marker, heightAt, x, z) {
@@ -149,10 +193,10 @@ function addContactShadow(marker, heightAt, x, z) {
   }
   const shade=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({map,transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-1}));
   shade.renderOrder=1;
-  marker.add(shade);
+  return shade;
 }
 
-function addDaisies(marker, groundY) {
+function daisyGeometry(groundY) {
   const random = randomSource(9181);
   const positions = [];
   const colors = [];
@@ -213,11 +257,10 @@ function addDaisies(marker, groundY) {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
-  const spray = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-  marker.add(spray);
+  return geometry;
 }
 
-function addGiftBouquet(marker, count) {
+function bouquetGeometry(count) {
   if (!(count > 0)) return;
   const positions = [], colors = [];
   const tint = new THREE.Color();
@@ -269,14 +312,12 @@ function addGiftBouquet(marker, count) {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
-  const bouquet = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
-  bouquet.name = '亲友献上的花束';
-  bouquet.position.set(.38,.06,.65);
-  bouquet.rotation.set(-.36,0,-.46);
-  marker.add(bouquet);
+  const pose=new THREE.Matrix4().compose(new THREE.Vector3(.38,.06,.65),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(-.36,0,-.46)),new THREE.Vector3(1,1,1));
+  return geometry.applyMatrix4(pose);
 }
 
-function loadPortrait(texture, source, keepWholePhoto, signal) {
+function loadPortrait(texture, source, keepWholePhoto, signal, onChange) {
   // Read through the same authenticated origin; redirects must not expose a private request.
   async function readPhoto() {
     if (source instanceof Blob) return source;
@@ -305,6 +346,7 @@ function loadPortrait(texture, source, keepWholePhoto, signal) {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
       texture.needsUpdate = true;
+      onChange?.();
     } finally {
       image.close();
     }
@@ -358,7 +400,7 @@ function addPaidGifts(marker, gifts = []) {
   }
 }
 
-function makeMarker(group, heightAt, place, memorial, stone, surface, signal, random, location = memorialPlots[place]) {
+function makeMarker(group, heightAt, place, memorial, shapes, surface, signal, random, onChange, location = memorialPlots[place]) {
   const { x, z, viewX, viewZ } = location;
   const marker = new THREE.Group();
   marker.name = {stone:'河湾纪念石',entrance:'桦坡纪念石',courtyard:'家庭纪念石'}[place];
@@ -366,23 +408,25 @@ function makeMarker(group, heightAt, place, memorial, stone, surface, signal, ra
   marker.rotation.y = Math.atan2(viewX - x, viewZ - z);
   group.add(marker);
 
-  const monument = new THREE.Mesh(stone, surface);
-  monument.castShadow = monument.receiveShadow = true;
-  monument.userData.habitat='stone';
-  marker.add(monument);
+  const boulder=new THREE.LOD();
+  for (const [geometry,distance] of [[shapes.stone,0],[shapes.distant,19]]) {
+    const mesh = new THREE.Mesh(geometry,surface);
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData.habitat='stone';
+    mesh.visible=distance===0;
+    boulder.addLevel(mesh,distance,.08);
+  }
+  marker.add(boulder);
 
-  addContactShadow(marker,heightAt,x,z);
-  const { x: frameX, y: portraitY, width: w, height: h } = frameSite;
-  // The photograph sits behind the lip. The shaded reveal stays visible especially
-  // from an oblique angle, where a flat rectangle would appear pasted to the rock.
-  const surround = roundedRim(w+.113,h+.113,.044,.039,.007,
-    new THREE.MeshStandardMaterial({color:0x786c58,roughness:.89}));
-  surround.position.set(frameX, portraitY, .35);
-  marker.add(surround);
-  const frame = roundedRim(w+.077,h+.077,.041,.034,.008,
-    new THREE.MeshStandardMaterial({color:0xe3d4b6,roughness:.55}));
-  frame.position.set(frameX, portraitY, .38);
-  marker.add(frame);
+  // At the far bank the inscription and flower petals occupy only a few
+  // pixels. Keep the silhouette, framed photo and purchased gifts at all distances.
+  const detail=new THREE.Group(), distantGifts=new THREE.Group(), distanceDetail=new THREE.LOD();
+  distanceDetail.addLevel(detail,0);
+  distantGifts.visible=false;
+  distanceDetail.addLevel(distantGifts,34,.08);
+  marker.add(distanceDetail);
+  detail.add(addContactShadow(marker,heightAt,x,z));
+  const frameX = frameSite.x;
   const photo = canvasTexture(480, 600, (ctx) => {
     ctx.fillStyle = '#e9e4d8';
     ctx.fillRect(0, 0, 480, 600);
@@ -391,11 +435,8 @@ function makeMarker(group, heightAt, place, memorial, stone, surface, signal, ra
     ctx.textAlign = 'center';
     ctx.fillText('留 念', 240, 316);
   });
-  loadPortrait(photo, memorial ? memorial.photoUrl : '/pet.webp', !!memorial, signal);
-  const portrait = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-    new THREE.MeshStandardMaterial({ map: photo, roughness: .86, emissiveMap: photo, emissive: 0xffffff, emissiveIntensity: .13 }));
-  portrait.position.set(frameX, portraitY, .395);
-  marker.add(portrait);
+  loadPortrait(photo, memorial ? memorial.photoUrl : '/pet.webp', !!memorial, signal, onChange);
+  marker.add(new THREE.Mesh(shapes.portrait,portraitMaterial(photo)));
 
   const dedication = memorial?.name || '永远想念你';
   const inscription = canvasTexture(768, 192, (ctx) => {
@@ -417,11 +458,19 @@ function makeMarker(group, heightAt, place, memorial, stone, surface, signal, ra
   const lettering = new THREE.Mesh(new THREE.PlaneGeometry(.86, .204),
     new THREE.MeshBasicMaterial({ map: inscription, transparent: true, depthWrite: false }));
   lettering.position.set(frameX, .365, .414);
-  marker.add(lettering);
+  detail.add(lettering);
   const yaw = marker.rotation.y, c = Math.cos(yaw), sn = Math.sin(yaw);
   const groundY = (px,pz) => heightAt(x+c*px+sn*pz, z-sn*px+c*pz) - marker.position.y;
-  addDaisies(marker, groundY);
-  addGiftBouquet(marker, memorial?.flowerCount);
+  const daisies = daisyGeometry(groundY), bouquet = bouquetGeometry(memorial?.flowerCount);
+  const flowers = bouquet ? mergeGeometries([daisies,bouquet]) : daisies;
+  const stems=new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide});
+  const spray=new THREE.Mesh(flowers,stems);
+  if (bouquet) {
+    daisies.dispose();
+    spray.name='亲友献上的花束';
+    distantGifts.add(new THREE.Mesh(bouquet,stems));
+  }
+  detail.add(spray);
   addPaidGifts(marker,memorial?.gifts);
 
   // A handful of detached, half-buried strata and the smaller chips around them.
@@ -447,19 +496,20 @@ function makeMarker(group, heightAt, place, memorial, stone, surface, signal, ra
     pebbles.setColorAt(i,tint);
   }
   pebbles.receiveShadow = true;
-  marker.add(pebbles);
+  detail.add(pebbles);
 }
 
-export function addMemorial(group, heightAt, memorial, signal) {
-  const stone = stoneGeometry(), surface = limestone();
+export function addMemorial(group, heightAt, memorial, signal, onChange) {
+  const shapes={stone:stoneGeometry(),distant:stoneGeometry(.24),portrait:portraitGeometry()};
+  const surface = limestone();
   const random = randomSource(1026);
-  makeMarker(group, heightAt, 'stone', memorial?.place === 'stone' ? memorial : null, stone, surface, signal, random);
-  if (memorial?.place === 'entrance') makeMarker(group, heightAt, 'entrance', memorial, stone, surface, signal, randomSource(2841));
+  makeMarker(group, heightAt, 'stone', memorial?.place === 'stone' ? memorial : null, shapes, surface, signal, random, onChange);
+  if (memorial?.place === 'entrance') makeMarker(group, heightAt, 'entrance', memorial, shapes, surface, signal, randomSource(2841), onChange);
 
   const dummy = new THREE.Object3D();
   // The path remains open: these markers form small groups on the meadow's outer slopes.
   const clearings = [[-28, 24], [-32, 21], [-33, 25], [-23, 13], [-27, 11], [-26, 15]];
-  const distant = new THREE.InstancedMesh(stoneGeometry(.24), surface, clearings.length);
+  const distant = new THREE.InstancedMesh(shapes.distant, surface, clearings.length);
   clearings.forEach(([px, pz], i) => {
     dummy.position.set(px, heightAt(px, pz) - .065, pz);
     const scale = .33 + random() * .19;
@@ -473,14 +523,15 @@ export function addMemorial(group, heightAt, memorial, signal) {
   return surface;
 }
 
-export function addFamilyMarkers(group, heightAt, gardens, signal, blockers, memorialStone) {
+export function addFamilyMarkers(group, heightAt, gardens, signal, blockers, memorialStone, onChange) {
   if (!gardens.length) return;
-  const stone=stoneGeometry(.65), surface=memorialStone || limestone(), random=randomSource(372);
+  const shapes={stone:stoneGeometry(.65),distant:stoneGeometry(.24),portrait:portraitGeometry()};
+  const surface=memorialStone || limestone(), random=randomSource(372);
   const columns=Math.min(gardens.length,4);
   gardens.forEach((garden,i)=>{
     // Continue the family rows down the hillside, with visitors looking west.
     const x=28.5-2.9*Math.floor(i/4), z=-6.8+(i%4-(columns-1)/2)*2.05;
-    makeMarker(group,heightAt,'courtyard',garden,stone,surface,signal,random,{x,z,viewX:x+3,viewZ:z+.15});
+    makeMarker(group,heightAt,'courtyard',garden,shapes,surface,signal,random,onChange,{x,z,viewX:x+3,viewZ:z+.15});
     blockers.push([x,z,.65,.99]);
   });
 }
